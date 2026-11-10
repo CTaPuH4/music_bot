@@ -10,8 +10,11 @@ from aiogram.types import BotCommand
 
 from config import settings
 from database.db import db
+from handlers.admin import admin_router
 from handlers.common import common_router
 from handlers.generation import generation_router
+from handlers.payments import payments_router
+from services.yookassa_webhook import start_webhook_server, background_payments_poller
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,6 +34,17 @@ async def set_bot_commands(bot: Bot) -> None:
         BotCommand(command="start", description="🔄 Перезапустить бота"),
     ]
     await bot.set_my_commands(commands)
+
+
+def setup_dispatcher() -> Dispatcher:
+    """Creates and configures the main Aiogram Dispatcher with routers in proper priority order."""
+    dp = Dispatcher(storage=MemoryStorage())
+    # Admin router must be first to give admin commands and states top priority
+    dp.include_router(admin_router)
+    dp.include_router(common_router)
+    dp.include_router(generation_router)
+    dp.include_router(payments_router)
+    return dp
 
 
 async def main() -> None:
@@ -54,23 +68,37 @@ async def main() -> None:
         token=settings.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
-    dp = Dispatcher(storage=MemoryStorage())
-
-    # Include routers
-    dp.include_router(common_router)
-    dp.include_router(generation_router)
+    dp = setup_dispatcher()
 
     # Set Telegram menu commands
     try:
-        await set_bot_commands(bot)
+        commands = [
+            BotCommand(command="create", description="🎵 Создать музыку по промту"),
+            BotCommand(command="profile", description="👤 Баланс и профиль"),
+            BotCommand(command="topup", description="💳 Пополнить баланс"),
+            BotCommand(command="help", description="ℹ️ Инструкция и примеры"),
+            BotCommand(command="start", description="🔄 Перезапустить бота"),
+        ]
+        await bot.set_my_commands(commands)
     except Exception as e:
         logger.warning("Could not set bot commands: %s", e)
+
+    # Start YooKassa Webhook server and background poller safety net
+    webhook_runner = None
+    if settings.webhook_enabled:
+        webhook_runner = await start_webhook_server(bot)
+
+    poller_task = asyncio.create_task(background_payments_poller(bot))
 
     logger.info("Bot is starting polling...")
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot)
     finally:
+        if poller_task:
+            poller_task.cancel()
+        if webhook_runner:
+            await webhook_runner.cleanup()
         await bot.session.close()
         logger.info("Bot stopped.")
 

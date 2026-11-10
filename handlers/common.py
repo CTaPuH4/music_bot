@@ -8,7 +8,10 @@ from database.db import db
 from keyboards.inline import (
     get_main_menu_keyboard,
     get_profile_keyboard,
+    get_referral_keyboard,
+    get_help_keyboard,
 )
+from services.referral import get_referral_tier, format_referral_tiers_table
 
 logger = logging.getLogger(__name__)
 common_router = Router()
@@ -47,7 +50,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         f"• Генерировать песни с вокалом и AI-стихами\n"
         f"• Писать инструментальные треки без слов\n"
         f"• Записывать треки с вашим собственным текстом\n\n"
-        f"💰 Ваш баланс: <b>{user['balance']}</b> генераций\n\n"
+        f"💰 Ваш баланс: <b>{user['total_balance']}</b> генераций\n\n"
         f"Нажмите кнопку ниже или отправьте мне текстовое описание трека прямо в чат!"
     )
 
@@ -62,47 +65,36 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 @common_router.message(Command("help"))
 async def cmd_help(event: Message | CallbackQuery) -> None:
     help_text = (
-        "📖 <b>Как создать идеальный трек:</b>\n\n"
-        "1️⃣ Нажмите <b>«🎵 Создать музыку»</b> или просто напишите описание песни в чат.\n"
-        "2️⃣ Укажите жанр, инструменты, темп и настроение трека.\n"
-        "3️⃣ Выберите режим:\n"
-        "   • <b>С вокалом (AI текст):</b> нейросеть сама сочинит слова песни.\n"
-        "   • <b>Без слов:</b> чистая музыка/минусовка.\n"
-        "   • <b>Свой текст:</b> пришлите свои стихи или куплеты.\n\n"
-        "⏱ Генерация обычно занимает <b>от 1 до 2 минут</b>.\n"
-        "После завершения вы получите готовый MP3 файл!"
+        "📖 <b>Инструкция по созданию музыки:</b>\n\n"
+        "Создание трека состоит из 4 простых шагов:\n\n"
+        "1️⃣ <b>Артист-референс:</b>\n"
+        "Выберите исполнителя, чью манеру и вокальный стиль вы хотите придать треку "
+        "(MACAN, ANNA ASTI, Баста, Цой, Король и Шут и др.), либо нажмите <i>«Без артиста»</i> для уникального стиля.\n\n"
+        "2️⃣ <b>Жанры (минимум 2):</b>\n"
+        "Отметьте хотя бы 2 жанра из списка (например, <i>Рок + Электроника</i> или <i>Lo-Fi + R&B</i>). "
+        "Смешивание стилей задаёт многослойное профессиональное звучание.\n\n"
+        "3️⃣ <b>Идея и тема песни:</b>\n"
+        "Опишите настроение, сюжет, тему или инструменты (например: <i>«Ночной неоновый город, воспоминания о лете, глубокий бас»</i>).\n\n"
+        "4️⃣ <b>Формат вокала:</b>\n"
+        "• <b>С вокалом (AI текст):</b> нейросеть сама сочинит стихи и исполнит песню.\n"
+        "• <b>Без слов:</b> чистая инструментальная минусовка.\n"
+        "• <b>Свой текст:</b> загрузите свои стихи или куплеты.\n\n"
+        "⏱ <b>Время ожидания:</b> 1–2 минуты. Бот пришлёт готовый MP3 файл с обложкой.\n\n"
+        "💡 <i>На каждом шаге доступна кнопка «◀️ Назад», чтобы скорректировать выбор.</i>"
     )
     if isinstance(event, CallbackQuery):
         await event.message.edit_text(
             help_text,
-            reply_markup=get_main_menu_keyboard(),
+            reply_markup=get_help_keyboard(),
             parse_mode="HTML",
         )
         await event.answer()
     else:
         await event.answer(
             help_text,
-            reply_markup=get_main_menu_keyboard(),
+            reply_markup=get_help_keyboard(),
             parse_mode="HTML",
         )
-
-
-@common_router.callback_query(F.data == "menu_examples")
-async def callback_examples(callback: CallbackQuery) -> None:
-    examples_text = (
-        "💡 <b>Примеры классных промтов для музыки:</b>\n\n"
-        "🎸 <i>«Энергичный поп-рок 2000-х с драйвовыми гитарами и мощным припевом про путешествие к морю»</i>\n\n"
-        "🎧 <i>«Chill lofi hip-hop beat with warm rhodes piano, vinyl crackle and smooth bass, relaxing study vibe»</i>\n\n"
-        "⚡ <i>«Агрессивный phonk с перегруженным 808 басом, ковбеллом и темным ночным настроением дрифта»</i>\n\n"
-        "🌌 <i>«Кинематографичный оркестровый саундтрек в стиле Hans Zimmer с глубокими струнными и эпическими барабанами»</i>\n\n"
-        "Скопируйте любой пример или придумайте свой!"
-    )
-    await callback.message.edit_text(
-        examples_text,
-        reply_markup=get_main_menu_keyboard(),
-        parse_mode="HTML",
-    )
-    await callback.answer()
 
 
 @common_router.callback_query(F.data == "menu_profile")
@@ -119,16 +111,17 @@ async def show_profile(event: Message | CallbackQuery) -> None:
         )
 
     stats = await db.get_user_stats(user_id)
-    bot_info = await event.bot.get_me()
-    ref_link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
+    total = user.get("total_balance", 0)
+    paid = user.get("paid_balance", 0)
+    gift = user.get("gift_balance", 0)
 
     text = (
         f"👤 <b>Ваш профиль:</b>\n\n"
-        f"🆔 ID: <code>{user_id}</code>\n"
-        f"💰 Баланс: <b>{user['balance']}</b> генераций\n"
-        f"🎵 Всего создано треков: <b>{stats['total_generations']}</b>\n"
-        f"👥 Приглашено друзей: <b>{stats['referrals_count']}</b>\n\n"
-        f"🔗 <b>Ваша реферальная ссылка:</b>\n<code>{ref_link}</code>"
+        f"🆔 ID: <code>{user_id}</code>\n\n"
+        f"💰 <b>Всего генераций:</b> <b>{total}</b>\n"
+        f"├── 💳 Платные: <b>{paid}</b>\n"
+        f"└── 🎁 Подарочные: <b>{gift}</b>\n\n"
+        f"🎵 Всего создано треков: <b>{stats['total_generations']}</b>"
     )
 
     if isinstance(event, CallbackQuery):
@@ -147,38 +140,73 @@ async def show_profile(event: Message | CallbackQuery) -> None:
 
 
 @common_router.callback_query(F.data == "menu_referral")
-async def callback_referral(callback: CallbackQuery) -> None:
-    user_id = callback.from_user.id
-    bot_info = await callback.bot.get_me()
+@common_router.message(Command("ref"))
+@common_router.message(Command("referral"))
+async def callback_referral(event: Message | CallbackQuery) -> None:
+    user_id = event.from_user.id
+    stats = await db.get_user_stats(user_id)
+    ref_count = stats["referrals_count"]
+    tier_info = get_referral_tier(ref_count)
+
+    bot_info = await event.bot.get_me()
     ref_link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
+
+    if tier_info["next_tier"]:
+        progress_text = (
+            f"🎯 До уровня <b>{tier_info['next_tier']['title']} ({tier_info['next_tier']['percent']}%)</b> "
+            f"осталось пригласить: <b>{tier_info['needed_for_next']}</b> чел."
+        )
+    else:
+        progress_text = "👑 <b>Вы достигли максимального уровня партнёрской программы!</b>"
+
+    tiers_table = format_referral_tiers_table(current_level=tier_info["level"])
 
     text = (
         "👥 <b>Реферальная программа</b>\n\n"
-        "Приглашайте друзей создавать музыку в боте!\n\n"
-        "🎁 <b>Условия (в разработке):</b>\n"
-        "• За каждого друга вы получаете бонусные генерации\n"
-        "• Процент от пополнений баланса вашими рефералами\n\n"
-        f"🔗 <b>Ваша персональная ссылка:</b>\n<code>{ref_link}</code>"
+        "Приглашайте друзей создавать музыку и получайте пожизненный процент "
+        "подарочных генераций с каждого их пополнения баланса!\n\n"
+        "📊 <b>Ваш партнёрский статус:</b>\n"
+        f"• Приглашено друзей: <b>{ref_count}</b> чел.\n"
+        f"• Текущий уровень: <b>{tier_info['title']} ({tier_info['percent']}%)</b>\n"
+        f"{progress_text}\n\n"
+        "🏆 <b>Уровни вознаграждения (от 2% до 20%):</b>\n"
+        f"{tiers_table}\n\n"
+        "🔗 <b>Ваша реферальная ссылка:</b>\n"
+        f"<code>{ref_link}</code>\n\n"
+        "<i>Отправьте ссылку другу. При первом переходе он закрепится за вами навсегда!</i>"
     )
 
+    if isinstance(event, CallbackQuery):
+        await event.message.edit_text(
+            text,
+            reply_markup=get_referral_keyboard(),
+            parse_mode="HTML",
+        )
+        await event.answer()
+    else:
+        await event.answer(
+            text,
+            reply_markup=get_referral_keyboard(),
+            parse_mode="HTML",
+        )
+
+
+@common_router.callback_query(F.data == "menu_main")
+async def callback_main_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    user_id = callback.from_user.id
+    user = await db.get_user(user_id)
+    total_balance = user["total_balance"] if user else 0
+
+    text = (
+        f"👋 <b>Главное меню</b>\n\n"
+        f"Бот для генерации музыки с помощью <b>Treblo Melodia v3</b> 🎧\n\n"
+        f"💰 Ваш баланс: <b>{total_balance}</b> генераций\n\n"
+        "Выберите действие ниже или отправьте мне текстовое описание трека прямо в чат!"
+    )
     await callback.message.edit_text(
         text,
-        reply_markup=get_profile_keyboard(),
+        reply_markup=get_main_menu_keyboard(),
         parse_mode="HTML",
     )
     await callback.answer()
-
-
-@common_router.callback_query(F.data == "menu_topup")
-async def callback_topup(callback: CallbackQuery) -> None:
-    text = (
-        "💳 <b>Пополнение баланса</b>\n\n"
-        "Модуль платежной системы находится в процессе подключения.\n"
-        "Скоро здесь будет доступна оплата через Telegram Stars, банковские карты и криптовалюту!"
-    )
-    await callback.answer("Модуль платежей скоро появится!", show_alert=True)
-    await callback.message.edit_text(
-        text,
-        reply_markup=get_profile_keyboard(),
-        parse_mode="HTML",
-    )

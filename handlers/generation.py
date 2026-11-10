@@ -1,11 +1,11 @@
 import asyncio
 import io
 import logging
-from typing import Optional
+from typing import Optional, List, Dict
 
 import httpx
 from aiogram import Router, F, Bot
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     Message,
@@ -18,7 +18,11 @@ from database.db import db
 from keyboards.inline import (
     get_artists_keyboard,
     get_artist_by_id,
+    get_genres_keyboard,
+    get_genre_by_id,
+    get_prompt_input_keyboard,
     get_mode_selection_keyboard,
+    get_lyrics_input_keyboard,
     get_cancel_keyboard,
     get_after_generation_keyboard,
     get_main_menu_keyboard,
@@ -35,6 +39,19 @@ logger = logging.getLogger(__name__)
 generation_router = Router()
 
 
+def format_genres_display(genre_ids: List[str]) -> str:
+    """Format list of genre IDs into human-readable string with emojis."""
+    names = []
+    for gid in genre_ids:
+        g = get_genre_by_id(gid)
+        if g:
+            names.append(f"{g['emoji']} {g['name']}")
+    return ", ".join(names) if names else "Не выбраны"
+
+
+# ---------------------------------------------------------
+# STEP 1: Artist Selection
+# ---------------------------------------------------------
 @generation_router.message(Command("create"))
 @generation_router.callback_query(F.data == "menu_create")
 async def start_creation(event: Message | CallbackQuery, state: FSMContext) -> None:
@@ -43,7 +60,7 @@ async def start_creation(event: Message | CallbackQuery, state: FSMContext) -> N
     await state.set_state(GenerationStates.waiting_for_artist)
 
     text = (
-        "🎙 <b>Шаг 1 из 3: Выберите артиста-референс</b>\n\n"
+        "🎙 <b>Шаг 1 из 4: Выберите артиста-референс</b>\n\n"
         "Выберите исполнителя, чей стиль и звучание послужат ориентиром для вашего трека, "
         "или нажмите <b>«Без артиста»</b> для своего уникального стиля:"
     )
@@ -73,13 +90,122 @@ async def cancel_creation(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
+# ---------------------------------------------------------
+# STEP BACK NAVIGATION
+# ---------------------------------------------------------
+@generation_router.callback_query(F.data == "gen_back:to_artist")
+async def step_back_to_artist(callback: CallbackQuery, state: FSMContext) -> None:
+    """Step back from genre selection to artist selection."""
+    await state.set_state(GenerationStates.waiting_for_artist)
+    text = (
+        "🎙 <b>Шаг 1 из 4: Выберите артиста-референс</b>\n\n"
+        "Выберите исполнителя, чей стиль и звучание послужат ориентиром для вашего трека, "
+        "или нажмите <b>«Без артиста»</b> для своего уникального стиля:"
+    )
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_artists_keyboard(),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@generation_router.callback_query(F.data == "gen_back:to_genres")
+async def step_back_to_genres(callback: CallbackQuery, state: FSMContext) -> None:
+    """Step back from prompt input to genre selection."""
+    await state.set_state(GenerationStates.waiting_for_genres)
+    data = await state.get_data()
+    selected_genres = data.get("selected_genres", [])
+    artist_name = data.get("artist_name")
+    artist_label = f"<b>{artist_name}</b>" if artist_name else "Без артиста"
+
+    genres_text = format_genres_display(selected_genres)
+    selected_status = (
+        f"Выбрано: <b>{genres_text}</b> ({len(selected_genres)})"
+        if selected_genres
+        else "Выбрано: <i>пока ничего не выбрано</i>"
+    )
+
+    text = (
+        f"🎙 <b>Артист:</b> {artist_label}\n\n"
+        "🎧 <b>Шаг 2 из 4: Выберите жанры (минимум 2)</b>\n"
+        f"{selected_status}\n\n"
+        "<i>Нажимайте на кнопки, чтобы отметить или снять жанры:</i>"
+    )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_genres_keyboard(selected_genres),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@generation_router.callback_query(F.data == "gen_back:to_prompt")
+async def step_back_to_prompt(callback: CallbackQuery, state: FSMContext) -> None:
+    """Step back from mode selection to prompt input."""
+    await state.set_state(GenerationStates.waiting_for_prompt)
+    data = await state.get_data()
+    artist_name = data.get("artist_name")
+    artist_style = data.get("artist_style")
+    selected_genres = data.get("selected_genres", [])
+    current_prompt = data.get("prompt", "")
+
+    artist_label = (
+        f"<b>{artist_name}</b> ({artist_style})" if artist_name else "Без артиста"
+    )
+    genres_display = format_genres_display(selected_genres)
+
+    text = (
+        f"🎙 <b>Артист:</b> {artist_label}\n"
+        f"🎧 <b>Жанры:</b> {genres_display}\n\n"
+        f"Текущая идея: <i>«{current_prompt}»</i>\n\n"
+        "✍️ <b>Шаг 3 из 4:</b> Вы можете изменить описание трека новым сообщением ниже 👇"
+    )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_prompt_input_keyboard(),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@generation_router.callback_query(F.data == "gen_back:to_mode")
+async def step_back_to_mode(callback: CallbackQuery, state: FSMContext) -> None:
+    """Step back from custom lyrics input to mode selection."""
+    await state.set_state(GenerationStates.waiting_for_mode)
+    data = await state.get_data()
+    prompt = data.get("prompt", "")
+    artist_name = data.get("artist_name")
+    selected_genres = data.get("selected_genres", [])
+
+    artist_display = f"<b>{artist_name}</b>" if artist_name else "Без артиста"
+    genres_display = format_genres_display(selected_genres)
+
+    text = (
+        f"🎵 <b>Идея трека:</b> <i>«{prompt}»</i>\n"
+        f"🎙 <b>Артист-референс:</b> {artist_display}\n"
+        f"🎧 <b>Жанры:</b> {genres_display}\n\n"
+        "⚙️ <b>Шаг 4 из 4: Выберите формат трека:</b>"
+    )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_mode_selection_keyboard(),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+# ---------------------------------------------------------
+# STEP 1 CALLBACK: Artist Chosen -> Move to Genres (STEP 2)
+# ---------------------------------------------------------
 @generation_router.callback_query(
     GenerationStates.waiting_for_artist, F.data.startswith("gen_artist:")
 )
 async def process_artist_selection(callback: CallbackQuery, state: FSMContext) -> None:
     artist_id = callback.data.split(":")[1]
-    data = await state.get_data()
-    existing_prompt = data.get("prompt")
 
     if artist_id == "none":
         await state.update_data(
@@ -105,13 +231,111 @@ async def process_artist_selection(callback: CallbackQuery, state: FSMContext) -
             )
             artist_label = "Без артиста"
 
-    # If prompt was already provided via quick text message:
+    # Move to Genre Selection (Step 2)
+    await state.set_state(GenerationStates.waiting_for_genres)
+    data = await state.get_data()
+    selected_genres = data.get("selected_genres", [])
+
+    text = (
+        f"🎙 <b>Артист:</b> {artist_label}\n\n"
+        "🎧 <b>Шаг 2 из 4: Выберите жанры (минимум 2)</b>\n"
+        "Выбрано: <i>пока ничего не выбрано</i>\n\n"
+        "<i>Нажимайте на кнопки, чтобы отметить нужные жанры:</i>"
+    )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_genres_keyboard(selected_genres),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+# ---------------------------------------------------------
+# STEP 2 CALLBACKS: Genres Multi-select
+# ---------------------------------------------------------
+@generation_router.callback_query(
+    GenerationStates.waiting_for_genres, F.data.startswith("gen_genre_toggle:")
+)
+async def process_genre_toggle(callback: CallbackQuery, state: FSMContext) -> None:
+    genre_id = callback.data.split(":")[1]
+    data = await state.get_data()
+    selected_genres = list(data.get("selected_genres", []))
+
+    if genre_id in selected_genres:
+        selected_genres.remove(genre_id)
+    else:
+        selected_genres.append(genre_id)
+
+    await state.update_data(selected_genres=selected_genres)
+
+    artist_name = data.get("artist_name")
+    artist_style = data.get("artist_style")
+    artist_label = (
+        f"<b>{artist_name}</b> ({artist_style})" if artist_name else "Без артиста"
+    )
+
+    genres_text = format_genres_display(selected_genres)
+    selected_status = (
+        f"Выбрано: <b>{genres_text}</b> ({len(selected_genres)})"
+        if selected_genres
+        else "Выбрано: <i>пока ничего не выбрано</i>"
+    )
+
+    text = (
+        f"🎙 <b>Артист:</b> {artist_label}\n\n"
+        "🎧 <b>Шаг 2 из 4: Выберите жанры (минимум 2)</b>\n"
+        f"{selected_status}\n\n"
+        "<i>Нажимайте на кнопки, чтобы отметить или снять жанры:</i>"
+    )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_genres_keyboard(selected_genres),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@generation_router.callback_query(
+    GenerationStates.waiting_for_genres, F.data == "gen_genres_need_more"
+)
+async def process_genres_need_more(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    count = len(data.get("selected_genres", []))
+    await callback.answer(
+        f"⚠️ Пожалуйста, выберите минимум 2 жанра! Сейчас выбрано: {count}",
+        show_alert=True,
+    )
+
+
+@generation_router.callback_query(
+    GenerationStates.waiting_for_genres, F.data == "gen_genres_confirm"
+)
+async def process_genres_confirm(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    selected_genres = data.get("selected_genres", [])
+
+    if len(selected_genres) < 2:
+        await callback.answer("⚠️ Выберите минимум 2 жанра!", show_alert=True)
+        return
+
+    existing_prompt = data.get("prompt")
+    artist_name = data.get("artist_name")
+    artist_style = data.get("artist_style")
+    artist_label = (
+        f"<b>{artist_name}</b> ({artist_style})" if artist_name else "Без артиста"
+    )
+    genres_display = format_genres_display(selected_genres)
+
+    # If prompt was already provided via quick message:
     if existing_prompt:
         await state.set_state(GenerationStates.waiting_for_mode)
         text = (
             f"🎵 <b>Идея трека:</b> <i>«{existing_prompt}»</i>\n"
-            f"🎙 <b>Артист-референс:</b> {artist_label}\n\n"
-            "⚙️ <b>Шаг 3 из 3: Выберите формат трека:</b>"
+            f"🎙 <b>Артист-референс:</b> {artist_label}\n"
+            f"🎧 <b>Жанры:</b> {genres_display}\n\n"
+            "⚙️ <b>Шаг 4 из 4: Выберите формат трека:</b>"
         )
         await callback.message.edit_text(
             text,
@@ -121,34 +345,29 @@ async def process_artist_selection(callback: CallbackQuery, state: FSMContext) -
         await callback.answer()
         return
 
-    # Normal flow: move to waiting for prompt
+    # Normal flow: move to prompt input (Step 3)
     await state.set_state(GenerationStates.waiting_for_prompt)
 
-    if artist_id == "none":
-        text = (
-            "✨ <b>Выбран режим:</b> Без артиста (свой стиль)\n\n"
-            "✍️ <b>Шаг 2 из 3: Опишите трек:</b>\n"
-            "Укажите жанр, настроение, тему или инструменты.\n"
-            "<i>Например:</i> «Медленный меланхоличный джаз с саксофоном и дождливым настроением»\n\n"
-            "Напишите текст сообщением ниже 👇"
-        )
-    else:
-        text = (
-            f"🎙 <b>Выбран артист:</b> {artist_label}\n\n"
-            "✍️ <b>Шаг 2 из 3: Опишите идею песни:</b>\n"
-            "О чём должна быть песня, какое настроение или тема трека?\n"
-            "<i>Например:</i> «Ночной город, скорость на трассе, воспоминания о любви»\n\n"
-            "Напишите текст сообщением ниже 👇"
-        )
+    text = (
+        f"🎙 <b>Артист:</b> {artist_label}\n"
+        f"🎧 <b>Жанры:</b> {genres_display}\n\n"
+        "✍️ <b>Шаг 3 из 4: Опишите идею трека:</b>\n"
+        "О чём должна быть песня, какое настроение, сюжет или инструменты?\n"
+        "<i>Например:</i> «Медленный ночной неоновый трек про поездку на авто и воспоминания»\n\n"
+        "Напишите текст сообщением ниже 👇"
+    )
 
     await callback.message.edit_text(
         text,
-        reply_markup=get_cancel_keyboard(),
+        reply_markup=get_prompt_input_keyboard(),
         parse_mode="HTML",
     )
     await callback.answer()
 
 
+# ---------------------------------------------------------
+# STEP 3: Prompt Text Input
+# ---------------------------------------------------------
 @generation_router.message(GenerationStates.waiting_for_prompt)
 async def process_prompt(message: Message, state: FSMContext) -> None:
     prompt_text = message.text.strip()
@@ -165,14 +384,18 @@ async def process_prompt(message: Message, state: FSMContext) -> None:
     await state.update_data(prompt=prompt_text)
     data = await state.get_data()
     artist_name = data.get("artist_name")
+    selected_genres = data.get("selected_genres", [])
 
     await state.set_state(GenerationStates.waiting_for_mode)
 
     artist_display = f"<b>{artist_name}</b>" if artist_name else "Без артиста"
+    genres_display = format_genres_display(selected_genres)
+
     text = (
         f"🎵 <b>Идея трека:</b> <i>«{prompt_text}»</i>\n"
-        f"🎙 <b>Артист-референс:</b> {artist_display}\n\n"
-        "⚙️ <b>Шаг 3 из 3: Выберите формат трека:</b>"
+        f"🎙 <b>Артист-референс:</b> {artist_display}\n"
+        f"🎧 <b>Жанры:</b> {genres_display}\n\n"
+        "⚙️ <b>Шаг 4 из 4: Выберите формат трека:</b>"
     )
 
     await message.answer(
@@ -182,6 +405,9 @@ async def process_prompt(message: Message, state: FSMContext) -> None:
     )
 
 
+# ---------------------------------------------------------
+# STEP 4: Mode Selection (Vocal AI / Instrumental / Custom Lyrics)
+# ---------------------------------------------------------
 @generation_router.callback_query(
     GenerationStates.waiting_for_mode, F.data.startswith("gen_mode:")
 )
@@ -191,6 +417,7 @@ async def process_mode_selection(callback: CallbackQuery, state: FSMContext) -> 
     prompt = data.get("prompt")
     artist_name = data.get("artist_name")
     artist_style = data.get("artist_style")
+    selected_genres = data.get("selected_genres", [])
 
     if not prompt:
         await callback.message.edit_text(
@@ -204,10 +431,13 @@ async def process_mode_selection(callback: CallbackQuery, state: FSMContext) -> 
     if mode == "custom_lyrics":
         await state.set_state(GenerationStates.waiting_for_lyrics)
         artist_display = f" (в стиле <b>{artist_name}</b>)" if artist_name else ""
+        genres_display = format_genres_display(selected_genres)
+
         await callback.message.edit_text(
-            f"🎵 <b>Промт:</b> <i>«{prompt}»</i>{artist_display}\n\n"
+            f"🎵 <b>Идея:</b> <i>«{prompt}»</i>{artist_display}\n"
+            f"🎧 <b>Жанры:</b> {genres_display}\n\n"
             "✍️ Теперь отправьте <b>текст песни</b> (стихи, куплеты, припев) сообщением в чат:",
-            reply_markup=get_cancel_keyboard(),
+            reply_markup=get_lyrics_input_keyboard(),
             parse_mode="HTML",
         )
         await callback.answer()
@@ -227,6 +457,7 @@ async def process_mode_selection(callback: CallbackQuery, state: FSMContext) -> 
         instrumental=instrumental,
         artist_name=artist_name,
         artist_style=artist_style,
+        selected_genre_ids=selected_genres,
         lyrics=None,
     )
 
@@ -242,6 +473,7 @@ async def process_lyrics(message: Message, state: FSMContext) -> None:
     prompt = data.get("prompt")
     artist_name = data.get("artist_name")
     artist_style = data.get("artist_style")
+    selected_genres = data.get("selected_genres", [])
     await state.clear()
 
     await execute_generation(
@@ -252,16 +484,14 @@ async def process_lyrics(message: Message, state: FSMContext) -> None:
         instrumental=False,
         artist_name=artist_name,
         artist_style=artist_style,
+        selected_genre_ids=selected_genres,
         lyrics=lyrics_text,
     )
 
 
-# Quick prompt handler: if user sends text directly in idle state
-@generation_router.message(F.text & ~F.text.startswith("/"))
+# Quick prompt handler: if user sends text directly in idle state (no FSM state)
+@generation_router.message(StateFilter(None), F.text, ~F.text.startswith("/"))
 async def handle_quick_prompt(message: Message, state: FSMContext) -> None:
-    current_state = await state.get_state()
-    if current_state is not None:
-        return
 
     prompt_text = message.text.strip()
     if len(prompt_text) < 3:
@@ -282,6 +512,9 @@ async def handle_quick_prompt(message: Message, state: FSMContext) -> None:
     )
 
 
+# ---------------------------------------------------------
+# EXECUTION: Treblo Melodia v3 Pipeline
+# ---------------------------------------------------------
 async def execute_generation(
     bot: Bot,
     chat_id: int,
@@ -290,6 +523,7 @@ async def execute_generation(
     instrumental: bool,
     artist_name: Optional[str] = None,
     artist_style: Optional[str] = None,
+    selected_genre_ids: Optional[List[str]] = None,
     lyrics: Optional[str] = None,
 ) -> None:
     """Executes the full music generation pipeline with Treblo Melodia v3 API."""
@@ -297,24 +531,25 @@ async def execute_generation(
     if not user:
         user = await db.get_or_create_user(user_id)
 
-    # Check balance
+    # Check and deduct balance (gifts first, then paid)
     cost = settings.generation_cost
-    if user["balance"] < cost:
+    deducted_from = await db.consume_generation_credit(user_id, cost=cost)
+    if not deducted_from:
+        total = user.get("total_balance", 0)
+        paid = user.get("paid_balance", 0)
+        gift = user.get("gift_balance", 0)
         await bot.send_message(
             chat_id=chat_id,
             text=(
                 f"⚠️ <b>Недостаточно генераций на балансе!</b>\n\n"
-                f"У вас осталось: <b>{user['balance']}</b>\n"
+                f"У вас осталось: <b>{total}</b> (Платные: {paid}, Подарочные: {gift})\n"
                 f"Стоимость создания: <b>{cost}</b>\n\n"
-                "Приглашайте друзей по реферальной ссылке или пополните баланс в профиле."
+                "Пополните баланс в профиле или приглашайте друзей по реферальной программе."
             ),
             reply_markup=get_main_menu_keyboard(),
             parse_mode="HTML",
         )
         return
-
-    # Deduct balance upfront (will refund if API fails)
-    await db.change_balance(user_id, -cost)
 
     mode_label = (
         "🎸 Без слов (Инструментал)"
@@ -323,12 +558,27 @@ async def execute_generation(
     )
     artist_label = artist_name if artist_name else "Оригинальный стиль"
 
+    # Resolve genre objects
+    genre_objs = []
+    if selected_genre_ids:
+        for gid in selected_genre_ids:
+            g = get_genre_by_id(gid)
+            if g:
+                genre_objs.append(g)
+
+    genre_names_str = (
+        ", ".join([f"{g['emoji']} {g['name']}" for g in genre_objs])
+        if genre_objs
+        else "Разнообразный"
+    )
+
     status_msg = await bot.send_message(
         chat_id=chat_id,
         text=(
             f"🚀 <b>Запуск генерации...</b>\n\n"
             f"🎵 <b>Идея:</b> <i>{prompt}</i>\n"
             f"🎙 <b>Референс:</b> {artist_label}\n"
+            f"🎧 <b>Жанры:</b> {genre_names_str}\n"
             f"⚙️ <b>Режим:</b> {mode_label}\n\n"
             f"⏳ Отправляем задачу в <b>Treblo Melodia v3</b>..."
         ),
@@ -337,23 +587,26 @@ async def execute_generation(
 
     task_id = None
     try:
-        # Prepare full prompt incorporating artist reference
-        if artist_name and artist_style:
-            full_prompt = f"В стиле {artist_name} ({artist_style}), {prompt}"
-            tags = [artist_name.lower().replace("&", "").strip()]
-        elif artist_name:
-            full_prompt = f"В стиле {artist_name}, {prompt}"
-            tags = [artist_name.lower().replace("&", "").strip()]
-        else:
-            full_prompt = prompt
-            tags = None
+        # Build tags for Treblo API
+        tags = [g["tag"] for g in genre_objs]
+        if artist_name:
+            tags.append(artist_name.lower().replace("&", "").strip())
+
+        # Compile rich descriptive prompt for Treblo
+        genre_tags_str = ", ".join([g["name"] for g in genre_objs])
+        artist_clause = (
+            f"в стиле {artist_name} ({artist_style}), "
+            if artist_name and artist_style
+            else (f"в стиле {artist_name}, " if artist_name else "")
+        )
+        full_prompt = f"Жанры: {genre_tags_str}. {artist_clause}{prompt}".strip()
 
         # Create task in Treblo
         task_id = await treblo_client.create_generation(
             prompt=full_prompt,
             instrumental=instrumental,
             lyrics=lyrics,
-            tags=tags,
+            tags=tags if tags else None,
         )
 
         await db.record_generation(
@@ -361,6 +614,7 @@ async def execute_generation(
             task_id=task_id,
             prompt=prompt,
             artist=artist_name,
+            genres=genre_names_str,
             instrumental=instrumental,
             lyrics=lyrics,
         )
@@ -373,6 +627,7 @@ async def execute_generation(
                         f"🎵 <b>Генерация в процессе...</b>\n\n"
                         f"Идея: <i>«{prompt}»</i>\n"
                         f"Референс: {artist_label}\n"
+                        f"Жанры: {genre_names_str}\n"
                         f"Режим: {mode_label}\n\n"
                         f"⚡ Нейросеть сочиняет трек и аранжировку... (1-2 мин)",
                         parse_mode="HTML",
@@ -426,6 +681,7 @@ async def execute_generation(
         caption_lines = [
             f"🎵 <b>{track_title}</b>",
             f"🎙 Референс: {artist_label}",
+            f"🎧 Жанры: {genre_names_str}",
             f"⚙️ Режим: {mode_label}",
         ]
         if duration:
@@ -474,9 +730,23 @@ async def execute_generation(
     except TrebloCreditsError as e:
         logger.error("Treblo credits error: %s", e)
         # Refund credit
-        await db.change_balance(user_id, cost)
+        if deducted_from:
+            await db.refund_generation_credit(user_id, balance_type=deducted_from, cost=cost)
         if task_id:
             await db.update_generation_status(task_id, "FAILURE")
+
+        # Alert admins
+        try:
+            from services.admin_alerts import notify_admins
+            await notify_admins(
+                bot,
+                "🚨 <b>КРИТИЧЕСКИЙ АЛЕРТ: Закончились кредиты Treblo API!</b>\n\n"
+                f"Пользователь <code>{user_id}</code> не смог сгенерировать трек.\n"
+                "Срочно пополните баланс на https://treblo.com",
+            )
+        except Exception:
+            pass
+
         await status_msg.edit_text(
             "⚠️ <b>Внимание:</b> На сервисе Treblo временно закончились кредиты API. "
             "Пожалуйста, свяжитесь с администратором.\nВаш баланс не списан.",
@@ -487,7 +757,8 @@ async def execute_generation(
     except TrebloTimeoutError as e:
         logger.error("Treblo timeout: %s", e)
         # Refund credit
-        await db.change_balance(user_id, cost)
+        if deducted_from:
+            await db.refund_generation_credit(user_id, balance_type=deducted_from, cost=cost)
         if task_id:
             await db.update_generation_status(task_id, "FAILURE")
         await status_msg.edit_text(
@@ -501,7 +772,8 @@ async def execute_generation(
     except Exception as e:
         logger.exception("Unexpected generation error: %s", e)
         # Refund credit
-        await db.change_balance(user_id, cost)
+        if deducted_from:
+            await db.refund_generation_credit(user_id, balance_type=deducted_from, cost=cost)
         if task_id:
             await db.update_generation_status(task_id, "FAILURE")
         await status_msg.edit_text(

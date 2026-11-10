@@ -11,10 +11,19 @@ try:
     import config
     import database.db
     import services.treblo
+    import services.yookassa
+    import services.payment_service
+    import services.referral
+    import services.yookassa_webhook
     import keyboards.inline
+    import keyboards.admin
     import states.generation
+    import states.admin
     import handlers.common
     import handlers.generation
+    import handlers.payments
+    import handlers.admin
+    import services.admin_alerts
     import main
     print("[OK] All imports passed successfully.")
 except Exception as e:
@@ -39,14 +48,34 @@ async def test_db():
         referred_by=None,
     )
     assert user["user_id"] == 12345
-    assert user["balance"] == config.settings.initial_user_credits
-    print("[OK] DB: User creation and initial balance check passed.")
+    assert user["gift_balance"] == config.settings.initial_user_credits
+    assert user["paid_balance"] == 0
+    assert user["total_balance"] == config.settings.initial_user_credits
+
+    # Test balance operations (paid vs gift, deduction prioritization, refund)
+    await test_db_instance.add_paid_balance(12345, 10)
+    u_after_paid = await test_db_instance.get_user(12345)
+    assert u_after_paid["paid_balance"] == 10
+    assert u_after_paid["gift_balance"] == config.settings.initial_user_credits
+
+    # Consume (should consume from gift first)
+    consumed_type = await test_db_instance.consume_generation_credit(12345, cost=1)
+    assert consumed_type == "gift"
+
+    # Refund
+    await test_db_instance.refund_generation_credit(12345, balance_type=consumed_type, cost=1)
+    u_after_refund = await test_db_instance.get_user(12345)
+    assert u_after_refund["gift_balance"] == config.settings.initial_user_credits
+
+    print("[OK] DB: Split balance, consume and refund checks passed.")
 
     # Record generation
     await test_db_instance.record_generation(
         user_id=12345,
         task_id="test-task-1",
         prompt="lofi chill beat",
+        artist="MACAN",
+        genres="Рок, Электроника",
         instrumental=True,
     )
     await test_db_instance.update_generation_status(
@@ -61,6 +90,79 @@ async def test_db():
     assert stats["success_generations"] == 1
     print("[OK] DB: Record generation and stats check passed.")
 
+    # Payments check
+    await test_db_instance.create_payment_record(
+        payment_id="pay-12345",
+        user_id=12345,
+        amount=249.0,
+        credits=15,
+    )
+    p = await test_db_instance.get_payment_record("pay-12345")
+    assert p is not None
+    assert p["status"] == "pending"
+    assert p["credits"] == 15
+
+    # Mark succeeded
+    rec = await test_db_instance.mark_payment_succeeded("pay-12345")
+    assert rec is not None
+    assert rec["status"] == "succeeded"
+
+    # Idempotency check: second time should return None
+    rec_second = await test_db_instance.mark_payment_succeeded("pay-12345")
+    assert rec_second is None
+    print("[OK] DB: Payment creation, status update and idempotency check passed.")
+
+    # Check pending list
+    await test_db_instance.create_payment_record(
+        payment_id="pay-pending-1",
+        user_id=12345,
+        amount=99.0,
+        credits=5,
+    )
+    pending_list = await test_db_instance.get_pending_payments(limit=10)
+    assert len(pending_list) >= 1
+    assert any(x["payment_id"] == "pay-pending-1" for x in pending_list)
+    print("[OK] DB: Pending payments fetch check passed.")
+
+    # Anti-spam checks: user pending count & stale cleanup
+    p_count = await test_db_instance.get_user_pending_count(12345, max_age_minutes=15)
+    assert p_count >= 1
+    cleaned = await test_db_instance.cleanup_stale_payments(max_age_hours=0)  # clean all older than 0 hours
+    assert cleaned >= 1
+    p_count_after = await test_db_instance.get_user_pending_count(12345, max_age_minutes=15)
+    assert p_count_after == 0
+    print("[OK] DB: Anti-spam pending count and stale cleanup passed.")
+
+    # Admin DB operations: tariffs, user_ids, stats, add_gift_balance
+    all_users = await test_db_instance.get_all_user_ids()
+    assert 12345 in all_users
+    print("[OK] DB: get_all_user_ids check passed.")
+
+    tariffs = await test_db_instance.get_all_tariffs()
+    assert len(tariffs) >= 4
+    pack_mini = await test_db_instance.get_tariff("pack_5")
+    assert pack_mini is not None
+    original_price = pack_mini["price"]
+
+    # Update price
+    await test_db_instance.update_tariff_price("pack_5", 99.0)
+    updated_tariff = await test_db_instance.get_tariff("pack_5")
+    assert updated_tariff["price"] == 99.0
+    # Revert price
+    await test_db_instance.update_tariff_price("pack_5", original_price)
+    print("[OK] DB: Tariffs dynamic price update check passed.")
+
+    # Admin gift credits addition
+    new_gift_total = await test_db_instance.add_gift_balance(12345, 25)
+    u_after_admin_gift = await test_db_instance.get_user(12345)
+    assert u_after_admin_gift["gift_balance"] == config.settings.initial_user_credits + 25
+    print("[OK] DB: Admin gift credits grant check passed.")
+
+    stats = await test_db_instance.get_system_stats()
+    assert stats["users_count"] >= 1
+    assert stats["payments_count"] >= 1
+    print("[OK] DB: Admin system stats check passed.")
+
     if os.path.exists(test_db_file):
         os.remove(test_db_file)
     print("[OK] DB tests completed successfully.")
@@ -73,21 +175,124 @@ async def test_treblo_client():
     print("[OK] Treblo client initialized successfully.")
 
 
-async def test_artists():
-    from keyboards.inline import POPULAR_ARTISTS, get_artists_keyboard, get_artist_by_id
+async def test_keyboards_and_catalogs():
+    from keyboards.inline import (
+        POPULAR_ARTISTS,
+        GENRES_CATALOG,
+        get_artists_keyboard,
+        get_artist_by_id,
+        get_genres_keyboard,
+        get_genre_by_id,
+        get_prompt_input_keyboard,
+        get_mode_selection_keyboard,
+        get_lyrics_input_keyboard,
+    )
     assert len(POPULAR_ARTISTS) == 10
+    assert len(GENRES_CATALOG) >= 10
     kb = get_artists_keyboard()
     assert kb is not None
+    genres_kb = get_genres_keyboard(["rock", "electronic"])
+    assert genres_kb is not None
+    assert get_prompt_input_keyboard() is not None
+    assert get_mode_selection_keyboard() is not None
+    assert get_lyrics_input_keyboard() is not None
     macan = get_artist_by_id("macan")
     assert macan is not None
-    assert macan["name"] == "MACAN"
-    print("[OK] Artists keyboard & mapping check passed.")
+    rock = get_genre_by_id("rock")
+    assert rock is not None
+    assert rock["name"] == "Рок"
+    print("[OK] Keyboards & catalogs (artists & genres) check passed.")
+
+
+async def test_yookassa_client():
+    from services.yookassa import YooKassaClient
+    client = YooKassaClient(shop_id="test_shop", secret_key="test_key")
+    assert client.is_configured is True
+    assert client.base_url == "https://api.yookassa.ru/v3"
+    print("[OK] YooKassa client initialized successfully.")
+
+
+async def test_referral_tiers():
+    from services.referral import (
+        get_referral_tier,
+        calculate_referral_reward,
+        format_referral_tiers_table,
+        REFERRAL_TIERS,
+    )
+    assert len(REFERRAL_TIERS) == 10
+    assert REFERRAL_TIERS[0]["percent"] == 2
+    assert REFERRAL_TIERS[-1]["percent"] == 20
+
+    t0 = get_referral_tier(0)
+    assert t0["level"] == 1
+    assert t0["percent"] == 2
+    assert t0["needed_for_next"] == 1
+
+    t4 = get_referral_tier(5)
+    assert t4["level"] == 4  # >= 4 and < 8
+    assert t4["percent"] == 8
+    assert t4["needed_for_next"] == 3  # 8 - 5
+
+    # Max level
+    t_max = get_referral_tier(300)
+    assert t_max["level"] == 10
+    assert t_max["percent"] == 20
+    assert t_max["next_tier"] is None
+
+    # Calculate reward: 15 credits bought at 10%
+    reward = calculate_referral_reward(15, 10)
+    assert reward == 2  # round(1.5) = 2
+    # At 2% of 5 credits: min 1
+    assert calculate_referral_reward(5, 2) == 1
+
+    table = format_referral_tiers_table(current_level=1)
+    assert "Ур. 1" in table and "2%" in table
+    print("[OK] Referral tiers (2%-20% geometric progression) checks passed.")
+
+
+async def test_admin_module():
+    from keyboards.admin import (
+        get_admin_main_keyboard,
+        get_admin_broadcast_confirm_keyboard,
+        get_admin_tariffs_keyboard,
+        get_admin_cancel_keyboard,
+    )
+    from handlers.admin import is_admin
+    from config import settings
+
+    # Keyboard generators
+    assert get_admin_main_keyboard() is not None
+    assert get_admin_broadcast_confirm_keyboard() is not None
+    dummy_tariffs = [
+        {"id": "pack_5", "title": "5 треков", "price": 10.0, "credits": 5, "emoji": "🌱"}
+    ]
+    assert get_admin_tariffs_keyboard(dummy_tariffs) is not None
+    assert get_admin_cancel_keyboard() is not None
+
+    # is_admin check logic
+    if settings.admin_ids_list:
+        first_admin = settings.admin_ids_list[0]
+        assert is_admin(first_admin) is True
+    assert is_admin(-999999999) is False
+
+    # Check router order in main
+    from main import setup_dispatcher
+    test_dp = setup_dispatcher()
+    routers = test_dp.sub_routers
+    assert len(routers) >= 4
+    # Ensure admin_router is first
+    from handlers.admin import admin_router
+    assert routers[0] == admin_router
+    print("[OK] Admin keyboards, authorization and router priority check passed.")
 
 
 async def run_all():
     await test_db()
     await test_treblo_client()
-    await test_artists()
+    await test_yookassa_client()
+    await test_referral_tiers()
+    await test_keyboards_and_catalogs()
+    await test_admin_module()
     print("\nALL LOCAL COMPONENT CHECKS PASSED!")
 
 
