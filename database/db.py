@@ -496,49 +496,41 @@ class Database:
 
     async def consume_generation_credit(self, user_id: int, cost: int = 1) -> Optional[str]:
         """
-        Deducts cost from balance. Prioritizes gift_balance first, then paid_balance.
+        Deducts cost from balance atomically. Prioritizes gift_balance first, then paid_balance.
         Returns 'gift' if deducted from gift balance,
         'paid' if deducted from paid balance,
         or None if insufficient funds.
         """
         async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute(
-                "SELECT paid_balance, gift_balance FROM users WHERE user_id = ?",
-                (user_id,),
-            ) as cursor:
-                row = await cursor.fetchone()
-                if not row:
-                    return None
-                gift = row["gift_balance"] or 0
-                paid = row["paid_balance"] or 0
-
-            if gift >= cost:
-                await db.execute(
-                    """
-                    UPDATE users
-                    SET gift_balance = gift_balance - ?,
-                        balance = max(0, coalesce(balance, 0) - ?)
-                    WHERE user_id = ?
-                    """,
-                    (cost, cost, user_id),
-                )
+            # 1. Attempt atomic deduction from gift_balance
+            cursor = await db.execute(
+                """
+                UPDATE users
+                SET gift_balance = gift_balance - ?,
+                    balance = max(0, coalesce(balance, 0) - ?)
+                WHERE user_id = ? AND coalesce(gift_balance, 0) >= ?
+                """,
+                (cost, cost, user_id, cost),
+            )
+            if cursor.rowcount > 0:
                 await db.commit()
                 return "gift"
-            elif (gift + paid) >= cost:
-                await db.execute(
-                    """
-                    UPDATE users
-                    SET paid_balance = paid_balance - ?,
-                        balance = max(0, coalesce(balance, 0) - ?)
-                    WHERE user_id = ?
-                    """,
-                    (cost, cost, user_id),
-                )
+
+            # 2. Attempt atomic deduction from paid_balance
+            cursor = await db.execute(
+                """
+                UPDATE users
+                SET paid_balance = paid_balance - ?,
+                    balance = max(0, coalesce(balance, 0) - ?)
+                WHERE user_id = ? AND (coalesce(gift_balance, 0) + coalesce(paid_balance, 0)) >= ?
+                """,
+                (cost, cost, user_id, cost),
+            )
+            if cursor.rowcount > 0:
                 await db.commit()
                 return "paid"
-            else:
-                return None
+
+            return None
 
     async def refund_generation_credit(
         self, user_id: int, balance_type: str = "gift", cost: int = 1
@@ -649,35 +641,29 @@ class Database:
 
     async def mark_payment_succeeded(self, payment_id: str) -> Optional[Dict[str, Any]]:
         """
-        Marks payment as succeeded idempotently.
+        Marks payment as succeeded idempotently and atomically.
         Returns the payment row if it was changed to 'succeeded',
-        or None if it was already processed before.
+        or None if it was already processed before or not found.
         """
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            async with db.execute(
-                "SELECT * FROM payments WHERE payment_id = ?", (payment_id,)
-            ) as cursor:
-                row = await cursor.fetchone()
-                if not row:
-                    return None
-                if row["status"] == "succeeded":
-                    return None  # already processed!
-
-            await db.execute(
+            cursor = await db.execute(
                 """
                 UPDATE payments
                 SET status = 'succeeded', updated_at = CURRENT_TIMESTAMP
-                WHERE payment_id = ?
+                WHERE payment_id = ? AND status != 'succeeded'
                 """,
                 (payment_id,),
             )
+            if cursor.rowcount == 0:
+                return None
+
             await db.commit()
 
             async with db.execute(
                 "SELECT * FROM payments WHERE payment_id = ?", (payment_id,)
-            ) as cursor:
-                updated_row = await cursor.fetchone()
+            ) as select_cursor:
+                updated_row = await select_cursor.fetchone()
                 return dict(updated_row) if updated_row else None
 
     async def mark_payment_canceled(self, payment_id: str) -> None:

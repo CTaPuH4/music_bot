@@ -1,3 +1,4 @@
+import html
 import logging
 from aiogram import Router, F
 from aiogram.filters import CommandStart, Command
@@ -43,8 +44,9 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         referred_by=referrer_id,
     )
 
+    safe_name = html.escape(first_name or 'друг')
     welcome_text = (
-        f"👋 <b>Привет, {first_name or 'друг'}!</b>\n\n"
+        f"👋 <b>Привет, {safe_name}!</b>\n\n"
         f"Я бот для создания полноценной музыки с помощью <b>искусственного интеллекта</b> 🎧\n\n"
         f"✨ <b>Что я умею:</b>\n"
         f"• Создавать музыку любых жанров по текстовому описанию (промту)\n"

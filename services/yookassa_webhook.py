@@ -48,10 +48,7 @@ async def yookassa_webhook_handler(request: web.Request) -> web.Response:
                     payment_id,
                 )
         except Exception as exc:
-            logger.error("Failed to verify payment %s on webhook: %s", payment_id, exc)
-            # Process via webhook payload if API check failed temporarily
-            if obj.get("status") == "succeeded":
-                await process_successful_payment(bot, payment_id)
+            logger.error("Failed to verify payment %s with YooKassa API: %s. Background poller will retry safely.", payment_id, exc)
 
     elif event == "payment.canceled":
         await process_canceled_payment(payment_id)

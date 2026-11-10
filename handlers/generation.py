@@ -1,4 +1,5 @@
 import asyncio
+import html
 import io
 import logging
 import re
@@ -650,7 +651,7 @@ async def handle_quick_prompt(message: Message, state: FSMContext) -> None:
     await state.set_state(GenerationStates.waiting_for_artist)
 
     # Short confirmation message of user's quick prompt
-    await message.answer(f"🎵 Идея: <i>«{prompt_text}»</i>", parse_mode="HTML")
+    await message.answer(f"🎵 Идея: <i>«{html.escape(prompt_text)}»</i>", parse_mode="HTML")
 
     text = (
         "🎤 <b>Шаг 1 — артист-референс</b>\n\n"
@@ -732,12 +733,12 @@ async def execute_generation(
     if instrumental and prompt == "Инструментальный трек":
         pass
     elif lyrics:
-        status_lines.append(f"📜 <b>Текст:</b> <i>«{prompt}»</i>")
+        status_lines.append(f"📜 <b>Текст:</b> <i>«{html.escape(prompt)}»</i>")
     else:
-        status_lines.append(f"🎵 <b>Идея:</b> <i>{prompt}</i>")
+        status_lines.append(f"🎵 <b>Идея:</b> <i>{html.escape(prompt)}</i>")
 
     if artist_name:
-        status_lines.append(f"🎙 <b>Референс:</b> {artist_name}")
+        status_lines.append(f"🎙 <b>Референс:</b> {html.escape(artist_name)}")
     status_lines.append(f"🎧 <b>Жанры:</b> {genre_names_str}")
     status_lines.append(f"⚙️ <b>Режим:</b> {mode_label}\n")
     status_lines.append("⏳ Отправляем задачу в нейросеть...")
@@ -792,12 +793,12 @@ async def execute_generation(
                     if instrumental and prompt == "Инструментальный трек":
                         pass
                     elif lyrics:
-                        update_lines.append(f"Текст: <i>«{prompt}»</i>")
+                        update_lines.append(f"Текст: <i>«{html.escape(prompt)}»</i>")
                     else:
-                        update_lines.append(f"Идея: <i>«{prompt}»</i>")
+                        update_lines.append(f"Идея: <i>«{html.escape(prompt)}»</i>")
 
                     if artist_name:
-                        update_lines.append(f"Референс: {artist_name}")
+                        update_lines.append(f"Референс: {html.escape(artist_name)}")
                     update_lines.append(f"Жанры: {genre_names_str}")
                     update_lines.append(f"Режим: {mode_label}\n")
                     update_lines.append("⚡ Нейросеть сочиняет трек и аранжировку... (1-2 мин)")
@@ -869,7 +870,7 @@ async def execute_generation(
         )
 
         performer_display = f"{artist_name} & Trivela" if artist_name else "Trivela"
-        display_caption = f"🎶 <b>{performer_display} | {track_title}</b>"
+        display_caption = f"🎶 <b>{html.escape(performer_display)} | {html.escape(track_title)}</b>"
 
         safe_performer = re.sub(r'[\\/*?:"<>|]', "", performer_display).strip()
         safe_title = re.sub(r'[\\/*?:"<>|]', "", track_title).strip()
