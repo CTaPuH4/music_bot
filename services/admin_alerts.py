@@ -38,6 +38,33 @@ async def notify_admins(bot: Bot, text: str) -> int:
     return sent_count
 
 
+def extract_treblo_credits(balance_info: Dict[str, Any]) -> Optional[int]:
+    """
+    Extracts integer total credit count from Treblo API response.
+    Treblo /credits/balance returns {'num_credits': int, 'num_credits_payg': int}.
+    Also supports fallback keys: credits, balance, credits_remaining, amount.
+    """
+    if not isinstance(balance_info, dict):
+        return None
+
+    # Check for Treblo's standard num_credits and num_credits_payg
+    if "num_credits" in balance_info or "num_credits_payg" in balance_info:
+        try:
+            c1 = int(balance_info.get("num_credits") or 0)
+            c2 = int(balance_info.get("num_credits_payg") or 0)
+            return c1 + c2
+        except (ValueError, TypeError):
+            pass
+
+    for key in ("credits", "balance", "credits_remaining", "amount", "total_credits"):
+        if key in balance_info and balance_info[key] is not None:
+            try:
+                return int(balance_info[key])
+            except (ValueError, TypeError):
+                continue
+    return None
+
+
 async def check_treblo_credits_and_alert(bot: Bot, force: bool = False) -> Dict[str, Any]:
     """
     Checks the Treblo API account credit balance.
@@ -50,22 +77,13 @@ async def check_treblo_credits_and_alert(bot: Bot, force: bool = False) -> Dict[
         logger.warning("Could not fetch Treblo credits balance: %s", balance_info)
         return balance_info
 
-    # Extract credits amount
-    credits = (
-        balance_info.get("credits")
-        or balance_info.get("balance")
-        or balance_info.get("credits_remaining")
-        or balance_info.get("amount")
-    )
-
-    if credits is None:
+    credits_int = extract_treblo_credits(balance_info)
+    if credits_int is None:
         logger.debug("Treblo balance response format: %s", balance_info)
         return balance_info
 
-    try:
-        credits_int = int(credits)
-    except (ValueError, TypeError):
-        return balance_info
+    # Normalize 'credits' key so callers can reliably read it
+    balance_info["credits"] = credits_int
 
     now = time.time()
     min_alert_interval = 3600  # 1 hour between repetitive warnings
@@ -76,10 +94,10 @@ async def check_treblo_credits_and_alert(bot: Bot, force: bool = False) -> Dict[
             _last_alert_state = "empty"
             _last_alert_time = now
             text = (
-                "🚨 <b>КРИТИЧЕСКИЙ АЛЕРТ: Кредиты Treblo API закончились!</b>\n\n"
+                "🚨 <b>КРИТИЧЕСКИЙ АЛЕРТ: Баланс API генераций закончился!</b>\n\n"
                 f"Текущий остаток: <b>{credits_int}</b> кредитов.\n"
                 "Генерация треков для пользователей заблокирована до пополнения баланса.\n\n"
-                "🔗 Пополните баланс в кабинете: https://treblo.com"
+                "🔗 Пополните баланс в личном кабинете провайдера API."
             )
             await notify_admins(bot, text)
 
@@ -90,10 +108,10 @@ async def check_treblo_credits_and_alert(bot: Bot, force: bool = False) -> Dict[
             _last_alert_state = "low"
             _last_alert_time = now
             text = (
-                "⚠️ <b>ВНИМАНИЕ: Заканчиваются кредиты Treblo API!</b>\n\n"
+                "⚠️ <b>ВНИМАНИЕ: Заканчиваются кредиты API генераций!</b>\n\n"
                 f"Осталось: <b>{credits_int}</b> кредитов <i>(~{approx_tracks} треков)</i>.\n"
                 "Рекомендуется заблаговременно пополнить баланс, чтобы сервис не остановился.\n\n"
-                "🔗 Кабинет Treblo: https://treblo.com"
+                "🔗 Пополните баланс в личном кабинете провайдера API."
             )
             await notify_admins(bot, text)
     else:

@@ -24,6 +24,7 @@ payments_router = Router()
 @payments_router.callback_query(F.data == "menu_topup")
 @payments_router.message(Command("topup"))
 @payments_router.message(Command("pay"))
+@payments_router.message(F.text.in_({"💳 Пополнить", "💳 Пополнить баланс"}))
 async def show_tariffs(event: Message | CallbackQuery) -> None:
     """Displays available generation packages and pricing."""
     db_tariffs = await db.get_all_tariffs()

@@ -11,6 +11,7 @@ from keyboards.inline import (
     get_referral_keyboard,
     get_help_keyboard,
 )
+from keyboards.reply import get_main_reply_keyboard
 from services.referral import get_referral_tier, format_referral_tiers_table
 
 logger = logging.getLogger(__name__)
@@ -44,25 +45,26 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 
     welcome_text = (
         f"👋 <b>Привет, {first_name or 'друг'}!</b>\n\n"
-        f"Я бот для генерации полноценной музыки с помощью <b>Treblo Melodia v3 API</b> 🎧\n\n"
+        f"Я бот для создания полноценной музыки с помощью <b>искусственного интеллекта</b> 🎧\n\n"
         f"✨ <b>Что я умею:</b>\n"
         f"• Создавать музыку любых жанров по текстовому описанию (промту)\n"
         f"• Генерировать песни с вокалом и AI-стихами\n"
         f"• Писать инструментальные треки без слов\n"
         f"• Записывать треки с вашим собственным текстом\n\n"
         f"💰 Ваш баланс: <b>{user['total_balance']}</b> генераций\n\n"
-        f"Нажмите кнопку ниже или отправьте мне текстовое описание трека прямо в чат!"
+        f"Воспользуйтесь кнопками внизу экрана или отправьте описание трека прямо в чат!"
     )
 
     await message.answer(
         welcome_text,
-        reply_markup=get_main_menu_keyboard(),
+        reply_markup=get_main_reply_keyboard(),
         parse_mode="HTML",
     )
 
 
 @common_router.callback_query(F.data == "menu_help")
 @common_router.message(Command("help"))
+@common_router.message(F.text.in_({"ℹ️ Помощь", "ℹ️ Инструкция"}))
 async def cmd_help(event: Message | CallbackQuery) -> None:
     help_text = (
         "📖 <b>Инструкция по созданию музыки:</b>\n\n"
@@ -73,14 +75,13 @@ async def cmd_help(event: Message | CallbackQuery) -> None:
         "2️⃣ <b>Жанры (минимум 2):</b>\n"
         "Отметьте хотя бы 2 жанра из списка (например, <i>Рок + Электроника</i> или <i>Lo-Fi + R&B</i>). "
         "Смешивание стилей задаёт многослойное профессиональное звучание.\n\n"
-        "3️⃣ <b>Идея и тема песни:</b>\n"
-        "Опишите настроение, сюжет, тему или инструменты (например: <i>«Ночной неоновый город, воспоминания о лете, глубокий бас»</i>).\n\n"
-        "4️⃣ <b>Формат вокала:</b>\n"
-        "• <b>С вокалом (AI текст):</b> нейросеть сама сочинит стихи и исполнит песню.\n"
-        "• <b>Без слов:</b> чистая инструментальная минусовка.\n"
-        "• <b>Свой текст:</b> загрузите свои стихи или куплеты.\n\n"
-        "⏱ <b>Время ожидания:</b> 1–2 минуты. Бот пришлёт готовый MP3 файл с обложкой.\n\n"
-        "💡 <i>На каждом шаге доступна кнопка «◀️ Назад», чтобы скорректировать выбор.</i>"
+        "3️⃣ <b>Текст песни (Lyrics):</b>\n"
+        "• <b>Auto (ИИ напишет текст):</b> нейросеть сама сочинит стихи и исполнит песню.\n"
+        "• <b>Свой текст:</b> загрузите свои стихи или куплеты.\n"
+        "• <b>Инструментал:</b> чистая музыка без вокала.\n\n"
+        "4️⃣ <b>Идея трека (для режима Auto):</b>\n"
+        "Опишите, о чём и в каком стиле написать текст (например: <i>«напиши текст в стиле скриптонита про ночной город»</i>).\n\n"
+        "⏱ <b>Время ожидания:</b> 1–2 минуты. Бот пришлёт готовый MP3 файл с обложкой."
     )
     if isinstance(event, CallbackQuery):
         await event.message.edit_text(
@@ -100,6 +101,7 @@ async def cmd_help(event: Message | CallbackQuery) -> None:
 @common_router.callback_query(F.data == "menu_profile")
 @common_router.message(Command("profile"))
 @common_router.message(Command("balance"))
+@common_router.message(F.text.in_({"👤 Профиль и баланс", "👤 Профиль", "👤 Баланс и профиль"}))
 async def show_profile(event: Message | CallbackQuery) -> None:
     user_id = event.from_user.id
     user = await db.get_user(user_id)
@@ -114,14 +116,16 @@ async def show_profile(event: Message | CallbackQuery) -> None:
     total = user.get("total_balance", 0)
     paid = user.get("paid_balance", 0)
     gift = user.get("gift_balance", 0)
+    ref_count = stats.get("referrals_count", 0)
 
     text = (
-        f"👤 <b>Ваш профиль:</b>\n\n"
+        f"👤 <b>Ваш профиль и баланс:</b>\n\n"
         f"🆔 ID: <code>{user_id}</code>\n\n"
         f"💰 <b>Всего генераций:</b> <b>{total}</b>\n"
         f"├── 💳 Платные: <b>{paid}</b>\n"
         f"└── 🎁 Подарочные: <b>{gift}</b>\n\n"
-        f"🎵 Всего создано треков: <b>{stats['total_generations']}</b>"
+        f"🎵 Всего создано треков: <b>{stats['total_generations']}</b>\n"
+        f"👥 Приглашено друзей: <b>{ref_count}</b>"
     )
 
     if isinstance(event, CallbackQuery):
@@ -142,8 +146,11 @@ async def show_profile(event: Message | CallbackQuery) -> None:
 @common_router.callback_query(F.data == "menu_referral")
 @common_router.message(Command("ref"))
 @common_router.message(Command("referral"))
+@common_router.message(F.text.in_({"👥 Рефералка", "👥 Реферальная программа"}))
 async def callback_referral(event: Message | CallbackQuery) -> None:
     user_id = event.from_user.id
+    user = await db.get_user(user_id)
+    ref_bal = user.get("referral_balance", 0.0) if user else 0.0
     stats = await db.get_user_stats(user_id)
     ref_count = stats["referrals_count"]
     tier_info = get_referral_tier(ref_count)
@@ -160,15 +167,19 @@ async def callback_referral(event: Message | CallbackQuery) -> None:
         progress_text = "👑 <b>Вы достигли максимального уровня партнёрской программы!</b>"
 
     tiers_table = format_referral_tiers_table(current_level=tier_info["level"])
+    needed_for_full = round(1.0 - ref_bal, 2)
 
     text = (
         "👥 <b>Реферальная программа</b>\n\n"
         "Приглашайте друзей создавать музыку и получайте пожизненный процент "
-        "подарочных генераций с каждого их пополнения баланса!\n\n"
+        "генераций с каждого их пополнения баланса!\n\n"
         "📊 <b>Ваш партнёрский статус:</b>\n"
         f"• Приглашено друзей: <b>{ref_count}</b> чел.\n"
         f"• Текущий уровень: <b>{tier_info['title']} ({tier_info['percent']}%)</b>\n"
+        f"• Реферальный баланс: <b>{ref_bal:g} / 1.0</b> "
+        f"<i>(до перевода в подарочные: {needed_for_full:g})</i>\n"
         f"{progress_text}\n\n"
+        "💡 <i>Дробные доли от покупок копятся на реферальном балансе. Как только сумма достигает 1.0, она автоматически переносится в ваши 🎁 Подарочные генерации!</i>\n\n"
         "🏆 <b>Уровни вознаграждения (от 2% до 20%):</b>\n"
         f"{tiers_table}\n\n"
         "🔗 <b>Ваша реферальная ссылка:</b>\n"
@@ -200,9 +211,9 @@ async def callback_main_menu(callback: CallbackQuery, state: FSMContext) -> None
 
     text = (
         f"👋 <b>Главное меню</b>\n\n"
-        f"Бот для генерации музыки с помощью <b>Treblo Melodia v3</b> 🎧\n\n"
+        f"Бот для генерации музыки с помощью <b>нейросети</b> 🎧\n\n"
         f"💰 Ваш баланс: <b>{total_balance}</b> генераций\n\n"
-        "Выберите действие ниже или отправьте мне текстовое описание трека прямо в чат!"
+        "Выберите действие внизу экрана или отправьте мне текстовое описание трека прямо в чат!"
     )
     await callback.message.edit_text(
         text,

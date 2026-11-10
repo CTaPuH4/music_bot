@@ -145,7 +145,21 @@ class TrebloClient:
                     f"Не удалось получить данные трека ({response.status_code}): {response.text}"
                 )
 
-            return response.json()
+            data = response.json()
+            if isinstance(data, dict):
+                # Normalize audio_url from song_paths if missing
+                if not data.get("audio_url"):
+                    paths = data.get("song_paths") or data.get("audio_paths")
+                    if isinstance(paths, list) and len(paths) > 0 and isinstance(paths[0], str):
+                        data["audio_url"] = paths[0]
+                # Normalize image_url if missing
+                if not data.get("image_url"):
+                    img_paths = data.get("image_paths") or data.get("cover_paths")
+                    if isinstance(img_paths, list) and len(img_paths) > 0 and isinstance(img_paths[0], str):
+                        data["image_url"] = img_paths[0]
+                    elif data.get("image_path"):
+                        data["image_url"] = data["image_path"]
+            return data
 
     async def get_account_balance(self) -> Dict[str, Any]:
         """
@@ -194,7 +208,7 @@ class TrebloClient:
             if status == "SUCCESS":
                 return await self.get_generation(task_id)
             elif status in ("FAILURE", "FAILED", "ERROR"):
-                raise TrebloAPIError("Генерация музыки завершилась ошибкой со стороны сервиса Treblo.")
+                raise TrebloAPIError("Генерация музыки завершилась ошибкой со стороны сервера нейросети.")
 
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval

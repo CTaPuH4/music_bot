@@ -57,7 +57,7 @@ async def main() -> None:
 
     if settings.treblo_api_key == "YOUR_TREBLO_API_KEY" or not settings.treblo_api_key:
         logger.warning(
-            "TREBLO_API_KEY is not configured in .env! Please set your Treblo API key from https://treblo.com"
+            "TREBLO_API_KEY is not configured in .env! Please set your music generation API key."
         )
 
     # Initialize SQLite database

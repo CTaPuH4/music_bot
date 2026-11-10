@@ -44,13 +44,12 @@ def get_referral_tier(referrals_count: int) -> Dict[str, Any]:
     }
 
 
-def calculate_referral_reward(credits_bought: int, percent: int) -> int:
+def calculate_referral_reward(credits_bought: int, percent: int) -> float:
     """
-    Calculates bonus gift generations earned from a referral purchase.
-    Minimum reward is 1 generation.
+    Calculates exact fractional referral reward earned from a referral purchase.
+    e.g. 5 credits * 2% = 0.1 generations.
     """
-    bonus = round(credits_bought * (percent / 100.0))
-    return max(1, int(bonus))
+    return round(credits_bought * (percent / 100.0), 2)
 
 
 def format_referral_tiers_table(current_level: int) -> str:

@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     admin_ids: str = ""
     treblo_low_credits_threshold: int = 500  # Alert admins if remaining Treblo credits < 500
 
+    # Mandatory Channel Subscription Settings (can also be configured dynamically in /admin)
+    required_channel: str = ""  # Channel username (e.g. '@trivela_channel') or channel ID
+    required_channel_url: str = ""  # Channel invite or public link (e.g. 'https://t.me/trivela_channel')
+
     @property
     def admin_ids_list(self) -> list[int]:
         if not self.admin_ids:

@@ -12,3 +12,13 @@ class AdminStates(StatesGroup):
 
     # Price customization
     waiting_for_tariff_price = State()
+
+    # Artists management
+    waiting_for_artist_name = State()
+    waiting_for_artist_style = State()
+    waiting_for_artist_aliases = State()
+    waiting_for_artist_edit_style = State()
+
+    # Mandatory channel subscription settings
+    waiting_for_sub_channel = State()
+    waiting_for_sub_channel_url = State()

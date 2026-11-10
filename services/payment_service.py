@@ -51,28 +51,43 @@ async def process_successful_payment(bot: Bot, payment_id: str) -> bool:
         tier_info = get_referral_tier(ref_count)
         percent = tier_info["percent"]
 
-        bonus_credits = calculate_referral_reward(credits_to_add, percent)
-        await db.add_gift_balance(referrer_id, bonus_credits)
+        bonus_fraction = calculate_referral_reward(credits_to_add, percent)
+        reward_result = await db.add_referral_reward(referrer_id, bonus_fraction)
 
         logger.info(
-            "Referrer %s (Tier %s, %s%%) awarded +%s gift credits from user %s payment.",
+            "Referrer %s (Tier %s, %s%%) earned +%s ref credits. Transferred: %s, remaining ref_bal: %s",
             referrer_id,
             tier_info["level"],
             percent,
-            bonus_credits,
-            user_id,
+            bonus_fraction,
+            reward_result["transferred"],
+            reward_result["referral_balance"],
         )
 
         try:
+            msg_lines = [
+                "🎁 <b>Реферальное вознаграждение!</b>\n",
+                f"Ваш приглашённый друг приобрёл <b>{credits_to_add}</b> генераций.",
+                f"Ваш уровень: <b>{tier_info['title']} ({percent}%)</b>",
+                f"Начислено в реферальную копилку: <b>+{bonus_fraction:g}</b> генераций.",
+            ]
+            if reward_result["transferred"] > 0:
+                msg_lines.append(
+                    f"\n🎉 <b>Копилка достигла целого числа!</b>\n"
+                    f"<b>+{reward_result['transferred']}</b> целых генераций переведено в <b>🎁 Подарочные</b>!\n"
+                    f"Остаток в копилке: <b>{reward_result['referral_balance']:g}</b>."
+                )
+            else:
+                needed = round(1.0 - reward_result["referral_balance"], 2)
+                msg_lines.append(
+                    f"Всего в копилке: <b>{reward_result['referral_balance']:g} / 1.0</b> "
+                    f"<i>(до целой генерации осталось {needed:g})</i>."
+                )
+            msg_lines.append("\nСпасибо, что приглашаете авторов!")
+
             await bot.send_message(
                 chat_id=referrer_id,
-                text=(
-                    f"🎁 <b>Реферальное вознаграждение!</b>\n\n"
-                    f"Ваш приглашённый друг приобрёл <b>{credits_to_add}</b> генераций.\n"
-                    f"Ваш уровень: <b>{tier_info['title']} ({percent}%)</b>\n"
-                    f"Вам начислено: <b>+{bonus_credits} подарочных генераций</b> 🎉\n\n"
-                    "Спасибо, что приглашаете авторов!"
-                ),
+                text="\n".join(msg_lines),
                 parse_mode="HTML",
             )
         except Exception as e:

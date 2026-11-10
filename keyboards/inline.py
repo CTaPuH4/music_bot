@@ -1,58 +1,74 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from typing import Optional, Dict, Iterable
 
+# Primary 24 artists shown in 3-column grid on Step 1
 POPULAR_ARTISTS = [
-    {
-        "id": "macan",
-        "name": "MACAN",
-        "style": "пацанский хип-хоп, глубокий бас, мелодичный автотюн, уличная романтика",
-    },
-    {
-        "id": "anna_asti",
-        "name": "ANNA ASTI",
-        "style": "танцевальный поп, сильный эмоциональный женский вокал, клубный бит 120 bpm",
-    },
-    {
-        "id": "miyagi",
-        "name": "Miyagi & Эндшпиль",
-        "style": "глубокий регги-хип-хоп, атмосферный саунд, плотный качающий грув",
-    },
-    {
-        "id": "basta",
-        "name": "Баста",
-        "style": "лиричный русский рэп, гитарные переборы, хриплый душевный вокал",
-    },
-    {
-        "id": "morgenshtern",
-        "name": "MORGENSHTERN",
-        "style": "энергичный трэп, мощный 808 бас, дерзкий флоу, клубный бэнгер",
-    },
-    {
-        "id": "kish",
-        "name": "Король и Шут",
-        "style": "хоррор-панк-рок, драйвовые гитары, сказочная мистическая атмосфера, хоровой припев",
-    },
-    {
-        "id": "zivert",
-        "name": "Zivert",
-        "style": "стильный винтажный синти-поп, фанк, диско 80-х, мягкий женский вокал",
-    },
-    {
-        "id": "skrip",
-        "name": "Скриптонит",
-        "style": "тягучий блюз-трэп, фирменный грув, живые барабаны, темная атмосфера",
-    },
-    {
-        "id": "instasamka",
-        "name": "INSTASAMKA",
-        "style": "дерзкий поп-трэп, глянцевый бит, ироничный речитатив, клубный кач",
-    },
-    {
-        "id": "kino",
-        "name": "Кино (Цой)",
-        "style": "русский рок, советский пост-панк, пульсирующий бас, акустика и лаконичный ритм",
-    },
+    {"id": "skrip", "name": "Скриптонит", "style": "тягучий блюз-трэп, фирменный грув, живые барабаны, темная атмосфера", "aliases": ["скриптонит", "скрип", "skriptonit", "skrip"]},
+    {"id": "morgenshtern", "name": "MORGENSHTERN", "style": "энергичный трэп, мощный 808 бас, дерзкий флоу, клубный бэнгер", "aliases": ["моргенштерн", "морген", "morgenshtern", "morgen"]},
+    {"id": "oxxxymiron", "name": "Oxxxymiron", "style": "быстрый техничный грайм, сложная рифмовка, плотный бит, интеллектуальный хип-хоп", "aliases": ["оксимирон", "окси", "oxxxymiron", "oxxxy", "мирон"]},
+    {"id": "basta", "name": "Баста", "style": "лиричный русский рэп, гитарные переборы, хриплый душевный вокал", "aliases": ["баста", "ноггано", "василий вакуленко", "basta"]},
+    {"id": "tape", "name": "Big Baby Tape", "style": "трэп, мемфис-рэп, напористый флоу, мощный перегруженный 808 бас", "aliases": ["биг бейби тейп", "тейп", "big baby tape", "tape"]},
+    {"id": "kizaru", "name": "Kizaru", "style": "классический мемфис-хип-хоп, расслабленный флоу, мрачный атмосферный трэп", "aliases": ["кизару", "kizaru", "олег"]},
+    {"id": "kreed", "name": "Егор Крид", "style": "мелодичный поп-хип-хоп, современный коммерческий поп, гладкий вокал", "aliases": ["егор крид", "крид", "kreed", "egor kreed"]},
+    {"id": "buda", "name": "OG Buda", "style": "детройт-рэп, оффбит флоу, остроумные панчлайны, быстрый напористый бит", "aliases": ["ог буда", "буда", "og buda", "buda"]},
+    {"id": "face", "name": "Face", "style": "минималистичный трэп, эмоциональный речитатив, драйвовый молодежный флоу", "aliases": ["фейс", "face", "иван дремин"]},
+    {"id": "eljay", "name": "Элджей", "style": "клубный хаус-рэп, неоновый дип-хаус, заедающий припев, автотюн", "aliases": ["элджей", "sayonaraboy", "eljay", "allj"]},
+    {"id": "pharaoh", "name": "Pharaoh", "style": "мрачный клауд-рэп, дед-династия, холодный меланхоличный саунд, шепчущий флоу", "aliases": ["фараон", "фара", "pharaoh", "глеб"]},
+    {"id": "tfest", "name": "T-Fest", "style": "мелодичный трэп, высокий эмоциональный вокал, гитарные акустические элементы", "aliases": ["т-фест", "тифест", "t-fest", "tfest"]},
+    {"id": "miyagi", "name": "Miyagi", "style": "глубокий регги-хип-хоп, атмосферный саунд, плотный качающий грув", "aliases": ["мияги", "miyagi", "эндшпиль", "hajime"]},
+    {"id": "saluki", "name": "Saluki", "style": "экспериментальный кинематографичный хип-хоп, сложный продакшн, живые инструменты", "aliases": ["салуки", "saluki", "сеня"]},
+    {"id": "instasamka", "name": "INSTASAMKA", "style": "дерзкий поп-трэп, глянцевый бит, ироничный речитатив, клубный кач", "aliases": ["инстасамка", "самка", "instasamka", "даша"]},
+    {"id": "jigan", "name": "Джиган", "style": "клубный хип-хоп, плотный танцевальный кач, уверенный бархатный речитатив", "aliases": ["джиган", "geegun", "jigan"]},
+    {"id": "mot", "name": "Мот", "style": "лиричный соул-хип-хоп, R&B, танцевальный поп, мелодичные припевы", "aliases": ["мот", "mot", "матвей"]},
+    {"id": "lone", "name": "L'One", "style": "мотивирующий стадионный хип-хоп, эпичные трубы и барабаны, энергичный флоу", "aliases": ["леван", "лван", "l'one", "lone"]},
+    {"id": "guf", "name": "Guf", "style": "классический московский андеграунд-рэп, неторопливый размеренный флоу, житейская лирика", "aliases": ["гуф", "guf", "леша"]},
+    {"id": "husky", "name": "Husky", "style": "экспрессивный авангардный хип-хоп, шаманский надрывный речитатив, индустриальный бит", "aliases": ["хаски", "husky", "дима"]},
+    {"id": "noize", "name": "Noize MC", "style": "фристайл-рок-хип-хоп, живой гаражный панк, остросоциальные стихи, акустическая гитара", "aliases": ["нойз", "нойз эмси", "noize mc", "noize", "иван алексеев"]},
+    {"id": "markul", "name": "Markul", "style": "мелодичный лондонский грайм-поп, электронный саунд, мягкий автотюн", "aliases": ["маркул", "markul", "марк"]},
+    {"id": "gone_fludd", "name": "GONE.Fludd", "style": "яркий психоделический поп-трэп, комиксовый драйв, быстрый игривый речитатив", "aliases": ["гон флад", "флад", "gone.fludd", "gone fludd", "саша"]},
+    {"id": "soda_luv", "name": "SODA LUV", "style": "агрессивный трэп, низкий хриплый голос, перегруженный бас, мем-панчи", "aliases": ["сода лав", "сода", "soda luv", "sodaluv"]},
 ]
+
+# Additional artists available in base and by text search
+EXTENDED_ARTISTS = [
+    {"id": "macan", "name": "MACAN", "style": "пацанский хип-хоп, глубокий бас, мелодичный автотюн, уличная романтика", "aliases": ["макан", "macan", "андрей"]},
+    {"id": "anna_asti", "name": "ANNA ASTI", "style": "танцевальный поп, сильный эмоциональный женский вокал, клубный бит 120 bpm", "aliases": ["анна асти", "асти", "anna asti", "asti"]},
+    {"id": "kish", "name": "Король и Шут", "style": "хоррор-панк-рок, драйвовые гитары, сказочная мистическая атмосфера, хоровой припев", "aliases": ["король и шут", "киш", "горшок", "князь", "kish"]},
+    {"id": "zivert", "name": "Zivert", "style": "стильный винтажный синти-поп, фанк, диско 80-х, мягкий женский вокал", "aliases": ["зиверт", "zivert", "юля"]},
+    {"id": "kino", "name": "Кино (Цой)", "style": "русский рок, советский пост-панк, пульсирующий бас, акустика и лаконичный ритм", "aliases": ["кино", "цой", "виктор цой", "kino"]},
+    {"id": "korzh", "name": "Макс Корж", "style": "стадионный дворовый поп-рэп, душевный припев, акустическая гитара, рейв-дроп", "aliases": ["макс корж", "корж", "max korzh"]},
+    {"id": "atl", "name": "ATL", "style": "кислотный шаманский электро-рэп, мрачный хаус-бит, глубокая поэзия", "aliases": ["атл", "atl", "сергей семак"]},
+    {"id": "lsp", "name": "ЛСП", "style": "трагичный синти-поп, танцевальный меланхоличный рэп, цепляющий припев", "aliases": ["лсп", "lsp", "олег"]},
+    {"id": "hammali_navai", "name": "HammAli & Navai", "style": "кальянный рэп, восточные мелодии, надрывный мужской дуэт, томный автотюн", "aliases": ["хаммали наваи", "хаммали", "наваи", "hammali", "navai"]},
+    {"id": "jah_khalib", "name": "Jah Khalib", "style": "чувственный восточный R&B, глубокий бархатный вокал, романтичный хип-хоп", "aliases": ["джа халиб", "халиб", "jah khalib", "khalib"]},
+]
+
+ALL_ARTISTS = POPULAR_ARTISTS + EXTENDED_ARTISTS
+
+
+def find_artist_by_name(query: str) -> Optional[Dict[str, Any]]:
+    """Searches for an artist by name, ID, or alias (case-insensitive)."""
+    q = query.strip().lower()
+    if not q:
+        return None
+    for a in ALL_ARTISTS:
+        if q == a["id"].lower() or q == a["name"].lower():
+            return a
+        for alias in a.get("aliases", []):
+            if q == alias.lower():
+                return a
+    # Partial match
+    for a in ALL_ARTISTS:
+        if q in a["name"].lower() or any(q in alias.lower() for alias in a.get("aliases", [])):
+            return a
+    return None
+
+
+def get_artist_by_id(artist_id: str) -> Optional[Dict[str, Any]]:
+    for a in ALL_ARTISTS:
+        if a["id"] == artist_id:
+            return a
+    return None
 
 # Curated genres matching Treblo's vocabulary with Russian display names
 GENRES_CATALOG = [
@@ -114,39 +130,77 @@ def get_help_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def get_artists_keyboard() -> InlineKeyboardMarkup:
-    """Builds an inline keyboard with popular Russian artists (2 per row) + skip & cancel."""
+def get_artists_keyboard(artists: Optional[Iterable[Dict[str, Any]]] = None) -> InlineKeyboardMarkup:
+    """Builds a 3-column inline keyboard with popular artists + show all + without artist."""
     buttons = []
     row = []
 
-    for artist in POPULAR_ARTISTS:
+    artist_list = list(artists) if artists is not None else POPULAR_ARTISTS
+
+    for artist in artist_list:
         row.append(
             InlineKeyboardButton(
-                text=f"🎙 {artist['name']}",
+                text=artist["name"],
                 callback_data=f"gen_artist:{artist['id']}",
             )
         )
-        if len(row) == 2:
+        if len(row) == 3:
             buttons.append(row)
             row = []
 
     if row:
         buttons.append(row)
 
-    # Add 'Without artist' and 'Back to menu'
+    # Show all artists button & Without artist button
     buttons.append([
         InlineKeyboardButton(
-            text="🚫 Без артиста (Свой стиль)",
+            text="📋 Показать всех артистов",
+            callback_data="gen_artists_all",
+        )
+    ])
+    buttons.append([
+        InlineKeyboardButton(
+            text="⏭ Без артиста (только жанры)",
             callback_data="gen_artist:none",
         )
     ])
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_all_artists_keyboard(artists: Optional[Iterable[Dict[str, Any]]] = None) -> InlineKeyboardMarkup:
+    """Keyboard for extended artists list with back to popular button."""
+    buttons = []
+    row = []
+
+    artist_list = list(artists) if artists is not None else ALL_ARTISTS
+
+    for artist in artist_list:
+        row.append(
+            InlineKeyboardButton(
+                text=artist["name"],
+                callback_data=f"gen_artist:{artist['id']}",
+            )
+        )
+        if len(row) == 3:
+            buttons.append(row)
+            row = []
+
+    if row:
+        buttons.append(row)
+
     buttons.append([
         InlineKeyboardButton(
-            text="◀️ Назад в меню",
-            callback_data="menu_main",
+            text="◀️ Назад к популярным",
+            callback_data="gen_artists_popular",
         )
     ])
-
+    buttons.append([
+        InlineKeyboardButton(
+            text="⏭ Без артиста (только жанры)",
+            callback_data="gen_artist:none",
+        )
+    ])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -193,23 +247,11 @@ def get_genres_keyboard(selected_ids: Iterable[str]) -> InlineKeyboardMarkup:
         )
 
     buttons.append([action_button])
-    buttons.append([
-        InlineKeyboardButton(text="◀️ Назад к артистам", callback_data="gen_back:to_artist"),
-        InlineKeyboardButton(text="❌ Отмена", callback_data="gen_cancel"),
-    ])
-
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def get_prompt_input_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="◀️ Назад к жанрам", callback_data="gen_back:to_genres"),
-                InlineKeyboardButton(text="❌ Отмена", callback_data="gen_cancel"),
-            ]
-        ]
-    )
+def get_prompt_input_keyboard() -> Optional[InlineKeyboardMarkup]:
+    return None
 
 
 def get_mode_selection_keyboard() -> InlineKeyboardMarkup:
@@ -217,47 +259,49 @@ def get_mode_selection_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="🎤 С вокалом (AI текст)",
+                    text="🤖 Auto - ИИ напишет текст",
                     callback_data="gen_mode:vocal_ai",
                 ),
             ],
             [
                 InlineKeyboardButton(
-                    text="🎸 Без слов (Инструментал)",
-                    callback_data="gen_mode:instrumental",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="✍️ Добавить свой текст",
+                    text="✍️ Свой текст",
                     callback_data="gen_mode:custom_lyrics",
                 ),
             ],
             [
-                InlineKeyboardButton(text="◀️ Назад к описанию", callback_data="gen_back:to_prompt"),
-                InlineKeyboardButton(text="❌ Отмена", callback_data="gen_cancel"),
+                InlineKeyboardButton(
+                    text="🎸 Инструментал (без вокала)",
+                    callback_data="gen_mode:instrumental",
+                ),
             ],
         ]
     )
 
 
-def get_lyrics_input_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="◀️ Назад к формату", callback_data="gen_back:to_mode"),
-                InlineKeyboardButton(text="❌ Отмена", callback_data="gen_cancel"),
-            ]
-        ]
-    )
+def get_lyrics_input_keyboard() -> Optional[InlineKeyboardMarkup]:
+    return None
+
+
+def get_subscription_gate_keyboard(channel_url: str) -> InlineKeyboardMarkup:
+    """Builds inline keyboard shown when user is not subscribed to mandatory channel."""
+    buttons = []
+    if channel_url:
+        buttons.append([
+            InlineKeyboardButton(text="📢 Подписаться на канал", url=channel_url),
+        ])
+    buttons.append([
+        InlineKeyboardButton(text="✅ Проверить подписку", callback_data="sub_check_verify"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def get_after_generation_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="🎵 Создать ещё трек", callback_data="menu_create"),
-                InlineKeyboardButton(text="👤 Мой баланс", callback_data="menu_profile"),
+                InlineKeyboardButton(text="🎵 Создать ещё", callback_data="menu_create"),
+                InlineKeyboardButton(text="💳 Купить создания", callback_data="menu_topup"),
             ],
         ]
     )
@@ -272,9 +316,6 @@ def get_profile_keyboard() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(text="👥 Реферальная программа", callback_data="menu_referral"),
             ],
-            [
-                InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu_main"),
-            ],
         ]
     )
 
@@ -284,7 +325,6 @@ def get_referral_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="◀️ Назад в профиль", callback_data="menu_profile"),
-                InlineKeyboardButton(text="◀️ В главное меню", callback_data="menu_main"),
             ],
         ]
     )
@@ -381,15 +421,5 @@ def get_payment_keyboard(payment_url: str, payment_id: str) -> InlineKeyboardMar
             [
                 InlineKeyboardButton(text="◀️ К тарифам", callback_data="menu_topup"),
             ],
-        ]
-    )
-
-
-def get_cancel_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="❌ Отмена", callback_data="gen_cancel"),
-            ]
         ]
     )

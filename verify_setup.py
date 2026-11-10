@@ -16,6 +16,7 @@ try:
     import services.referral
     import services.yookassa_webhook
     import keyboards.inline
+    import keyboards.reply
     import keyboards.admin
     import states.generation
     import states.admin
@@ -66,6 +67,23 @@ async def test_db():
     await test_db_instance.refund_generation_credit(12345, balance_type=consumed_type, cost=1)
     u_after_refund = await test_db_instance.get_user(12345)
     assert u_after_refund["gift_balance"] == config.settings.initial_user_credits
+
+    # Referral fractional balance & auto-transfer test
+    await test_db_instance.get_or_create_user(88888, "ref_tester", "Ref")
+    r1 = await test_db_instance.add_referral_reward(88888, 0.1)
+    assert r1["earned"] == 0.1
+    assert r1["transferred"] == 0
+    assert r1["referral_balance"] == 0.1
+
+    r2 = await test_db_instance.add_referral_reward(88888, 0.9)
+    assert r2["earned"] == 0.9
+    assert r2["transferred"] == 1
+    assert r2["referral_balance"] == 0.0
+
+    r3 = await test_db_instance.add_referral_reward(88888, 2.45)
+    assert r3["transferred"] == 2
+    assert r3["referral_balance"] == 0.45
+    print("[OK] DB: Referral fractional piggy bank & auto-transfer check passed.")
 
     print("[OK] DB: Split balance, consume and refund checks passed.")
 
@@ -163,6 +181,60 @@ async def test_db():
     assert stats["payments_count"] >= 1
     print("[OK] DB: Admin system stats check passed.")
 
+    # Dynamic artists checks
+    popular = await test_db_instance.get_popular_artists()
+    assert len(popular) == 0
+    extended = await test_db_instance.get_extended_artists()
+    assert len(extended) == 77
+
+    # Swap order check on extended list: swap #1 and #2
+    e1_orig = extended[0]["id"]
+    e2_orig = extended[1]["id"]
+    await test_db_instance.swap_artist_order(e2_orig, direction="up")
+    extended_after_swap = await test_db_instance.get_extended_artists()
+    assert extended_after_swap[0]["id"] == e2_orig
+    assert extended_after_swap[1]["id"] == e1_orig
+    # Swap back
+    await test_db_instance.swap_artist_order(e2_orig, direction="down")
+    extended_reverted = await test_db_instance.get_extended_artists()
+    assert extended_reverted[0]["id"] == e1_orig
+
+    # Add artist check
+    new_id = await test_db_instance.add_artist(
+        name="Drake",
+        style="трэп, R&B, автотюн, ночной вайб",
+        aliases=["дрейк", "drake", "champagne papi"],
+        is_popular=True,
+    )
+    assert new_id == "drake"
+    drake = await test_db_instance.get_artist_by_id(new_id)
+    assert drake is not None
+    assert drake["name"] == "Drake"
+    assert "drake" in drake["aliases"]
+    assert drake["is_popular"] == 1
+    assert (await test_db_instance.find_artist_by_name("champagne papi")) is not None
+
+    # Update artist style & delete
+    await test_db_instance.update_artist(new_id, style="новый стиль")
+    assert (await test_db_instance.get_artist_by_id(new_id))["style"] == "новый стиль"
+    await test_db_instance.delete_artist(new_id)
+    assert await test_db_instance.get_artist_by_id(new_id) is None
+    print("[OK] DB: Dynamic artists CRUD and order swap checks passed.")
+
+    # Subscription check settings in DB
+    sub_init = await test_db_instance.is_subscription_check_enabled()
+    assert sub_init is False
+    await test_db_instance.set_subscription_check_enabled(True)
+    assert (await test_db_instance.is_subscription_check_enabled()) is True
+    await test_db_instance.set_required_channel("@trivela_channel")
+    await test_db_instance.set_setting("required_channel_url", "https://t.me/trivela_channel")
+    ch_info = await test_db_instance.get_required_channel()
+    assert ch_info["channel"] == "@trivela_channel"
+    assert ch_info["url"] == "https://t.me/trivela_channel"
+    await test_db_instance.set_subscription_check_enabled(False)
+    assert (await test_db_instance.is_subscription_check_enabled()) is False
+    print("[OK] DB: Subscription check settings passed.")
+
     if os.path.exists(test_db_file):
         os.remove(test_db_file)
     print("[OK] DB tests completed successfully.")
@@ -187,17 +259,22 @@ async def test_keyboards_and_catalogs():
         get_mode_selection_keyboard,
         get_lyrics_input_keyboard,
     )
-    assert len(POPULAR_ARTISTS) == 10
+    from keyboards.inline import find_artist_by_name
+    from keyboards.reply import get_main_reply_keyboard
+    assert len(POPULAR_ARTISTS) == 24
     assert len(GENRES_CATALOG) >= 10
     kb = get_artists_keyboard()
     assert kb is not None
     genres_kb = get_genres_keyboard(["rock", "electronic"])
     assert genres_kb is not None
-    assert get_prompt_input_keyboard() is not None
     assert get_mode_selection_keyboard() is not None
-    assert get_lyrics_input_keyboard() is not None
-    macan = get_artist_by_id("macan")
-    assert macan is not None
+    reply_kb = get_main_reply_keyboard()
+    assert reply_kb is not None
+    assert reply_kb.is_persistent is True
+    skrip = get_artist_by_id("skrip")
+    assert skrip is not None
+    assert find_artist_by_name("моргенштерн") is not None
+    assert find_artist_by_name("macan") is not None
     rock = get_genre_by_id("rock")
     assert rock is not None
     assert rock["name"] == "Рок"
@@ -239,11 +316,11 @@ async def test_referral_tiers():
     assert t_max["percent"] == 20
     assert t_max["next_tier"] is None
 
-    # Calculate reward: 15 credits bought at 10%
+    # Calculate fractional reward: 15 credits bought at 10%
     reward = calculate_referral_reward(15, 10)
-    assert reward == 2  # round(1.5) = 2
-    # At 2% of 5 credits: min 1
-    assert calculate_referral_reward(5, 2) == 1
+    assert reward == 1.5
+    # At 2% of 5 credits: 0.1
+    assert calculate_referral_reward(5, 2) == 0.1
 
     table = format_referral_tiers_table(current_level=1)
     assert "Ур. 1" in table and "2%" in table
@@ -253,15 +330,20 @@ async def test_referral_tiers():
 async def test_admin_module():
     from keyboards.admin import (
         get_admin_main_keyboard,
+        get_admin_sub_keyboard,
         get_admin_broadcast_confirm_keyboard,
         get_admin_tariffs_keyboard,
         get_admin_cancel_keyboard,
     )
+    from keyboards.inline import get_subscription_gate_keyboard
     from handlers.admin import is_admin
     from config import settings
 
     # Keyboard generators
-    assert get_admin_main_keyboard() is not None
+    assert get_admin_main_keyboard(sub_enabled=True) is not None
+    assert get_admin_main_keyboard(sub_enabled=False) is not None
+    assert get_admin_sub_keyboard(sub_enabled=True) is not None
+    assert get_subscription_gate_keyboard("https://t.me/test") is not None
     assert get_admin_broadcast_confirm_keyboard() is not None
     dummy_tariffs = [
         {"id": "pack_5", "title": "5 треков", "price": 10.0, "credits": 5, "emoji": "🌱"}
