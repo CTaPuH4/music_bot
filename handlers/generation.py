@@ -953,8 +953,9 @@ async def execute_generation(
         if task_id:
             await db.update_generation_status(task_id, "FAILURE")
         await status_msg.edit_text(
-            f"❌ <b>Ошибка генерации:</b>\n{str(e)[:200]}\n\n"
-            "Потраченная попытка возвращена на ваш баланс. Попробуйте еще раз или измените промт.",
+            "😔 <b>Не удалось создать трек</b>\n\n"
+            "Во время генерации произошла ошибка на стороне нейросети.\n"
+            "Потраченная попытка возвращена на ваш баланс. Попробуйте ещё раз или выберите другой стиль.",
             reply_markup=get_main_menu_keyboard(),
             parse_mode="HTML",
         )

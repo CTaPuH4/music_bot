@@ -69,34 +69,43 @@ class TrebloClient:
             try:
                 response = await client.post(url, headers=self._headers, json=payload)
             except httpx.RequestError as exc:
-                logger.error("HTTP network error contacting Treblo: %s", exc)
-                raise TrebloAPIError(f"Ошибка соединения с Treblo API: {exc}") from exc
+                logger.error("HTTP network error contacting music generation service: %s", exc)
+                raise TrebloAPIError("Ошибка соединения с сервисом генерации музыки.") from exc
 
             if response.status_code == 401:
-                logger.error("Invalid Treblo API Key: %s", response.text)
-                raise TrebloAPIError("Неверный ключ Treblo API. Проверьте конфигурацию.")
+                logger.error("Invalid API Key for generation service: %s", response.text)
+                raise TrebloAPIError("Ошибка авторизации сервиса генерации.")
 
             if response.status_code == 402:
-                logger.error("Treblo credits exhausted: %s", response.text)
-                raise TrebloCreditsError("Недостаточно кредитов на аккаунте Treblo API.")
+                logger.error("Generation credits exhausted: %s", response.text)
+                raise TrebloCreditsError("Недостаточно кредитов сервиса генерации.")
+
+            # If service rejects arbitrary tags with 422, retry immediately without tags
+            if response.status_code == 422 and "tags" in response.text.lower() and "tags" in payload:
+                logger.warning(
+                    "Generation service returned 422 on tags (%s). Retrying generation without tags parameter...",
+                    response.text,
+                )
+                retry_payload = {k: v for k, v in payload.items() if k != "tags"}
+                response = await client.post(url, headers=self._headers, json=retry_payload)
 
             if response.status_code >= 400:
                 logger.error(
-                    "Treblo API error [%s]: %s", response.status_code, response.text
+                    "Generation service API error [%s]: %s", response.status_code, response.text
                 )
                 try:
                     err_json = response.json()
                     detail = err_json.get("detail") or err_json.get("message") or response.text
                 except Exception:
                     detail = response.text
-                raise TrebloAPIError(f"Ошибка Treblo API ({response.status_code}): {detail}")
+                raise TrebloAPIError(f"Ошибка сервиса генерации ({response.status_code}): {detail}")
 
             data = response.json()
             task_id = data.get("task_id")
             if not task_id:
-                raise TrebloAPIError(f"В ответе API отсутствует task_id: {data}")
+                raise TrebloAPIError(f"В ответе сервиса отсутствует task_id: {data}")
 
-            logger.info("Treblo task created successfully: %s", task_id)
+            logger.info("Generation task created successfully: %s", task_id)
             return task_id
 
     async def get_status(self, task_id: str) -> str:

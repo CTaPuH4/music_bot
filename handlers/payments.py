@@ -110,7 +110,7 @@ async def handle_buy_package(callback: CallbackQuery) -> None:
         )
     except YooKassaError as exc:
         logger.error("Failed to create YooKassa payment: %s", exc)
-        await callback.answer(f"Ошибка создания счета: {exc}", show_alert=True)
+        await callback.answer("Не удалось создать счет на оплату. Попробуйте позже.", show_alert=True)
         return
 
     payment_id = payment["id"]
@@ -158,7 +158,7 @@ async def handle_check_payment(callback: CallbackQuery) -> None:
         payment = await yookassa_client.get_payment(payment_id)
     except YooKassaError as exc:
         logger.error("Error checking YooKassa payment: %s", exc)
-        await callback.answer(f"Ошибка проверки статуса: {exc}", show_alert=True)
+        await callback.answer("Не удалось проверить статус оплаты. Попробуйте еще раз через несколько секунд.", show_alert=True)
         return
 
     status = payment.get("status")

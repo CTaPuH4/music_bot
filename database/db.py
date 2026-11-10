@@ -248,8 +248,8 @@ class Database:
                 default_tariffs = [
                     ("pack_5", "5 генераций", 5, 10.0, "🥉", format_per_track_badge(10.0, 5)),
                     ("pack_15", "15 генераций", 15, 10.0, "🥈", format_per_track_badge(10.0, 15)),
-                    ("pack_50", "50 генераций", 50, 10.0, "🥇", format_per_track_badge(10.0, 50)),
-                    ("pack_150", "150 генераций", 150, 10.0, "👑", format_per_track_badge(10.0, 150)),
+                    ("pack_45", "45 генераций", 45, 10.0, "🥇", format_per_track_badge(10.0, 45)),
+                    ("pack_100", "100 генераций", 100, 10.0, "👑", format_per_track_badge(10.0, 100)),
                 ]
                 await db.executemany(
                     """
@@ -259,6 +259,14 @@ class Database:
                     default_tariffs,
                 )
             else:
+                # Migrate legacy pack_50 -> pack_45 and pack_150 -> pack_100 if present
+                await db.execute(
+                    "UPDATE tariffs SET id = 'pack_45', title = '45 генераций', credits = 45 WHERE id = 'pack_50'"
+                )
+                await db.execute(
+                    "UPDATE tariffs SET id = 'pack_100', title = '100 генераций', credits = 100 WHERE id = 'pack_150'"
+                )
+
                 # Automatically keep badges in sync as dynamic "X ₽ за трек"
                 async with db.execute("SELECT id, credits, price, badge FROM tariffs") as cursor:
                     existing_tariffs = await cursor.fetchall()
