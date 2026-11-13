@@ -27,6 +27,17 @@ async def process_successful_payment(bot: Bot, payment_id: str) -> bool:
     credits_to_add = record["credits"]
     amount = record["amount"]
 
+    # Mark promo code discount as consumed (fair 1-time discount window)
+    activation_id = record.get("promo_activation_id")
+    if activation_id:
+        await db.mark_user_promo_used(activation_id, payment_id)
+        logger.info("Marked promo activation %s as used for payment %s", activation_id, payment_id)
+    else:
+        active_disc = await db.get_user_active_discount(user_id)
+        if active_disc:
+            await db.mark_user_promo_used(active_disc["id"], payment_id)
+            logger.info("Fallback: marked active promo discount %s as used for payment %s", active_disc["id"], payment_id)
+
     # Credit user paid balance
     await db.add_paid_balance(user_id, credits_to_add)
     user_updated = await db.get_user(user_id)

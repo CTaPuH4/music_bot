@@ -1,14 +1,16 @@
 import asyncio
 import logging
-from typing import Optional
+from datetime import datetime, timedelta
+from typing import Optional, List, Dict, Any
 
 from aiogram import Router, F, Bot
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 from config import settings
-from database.db import db
+from database.db import db, get_msk_now, MSK_TZ
+from keyboards.inline import TARIFF_PACKAGES, get_tariff_by_id, format_per_track_badge
 from keyboards.admin import (
     get_admin_main_keyboard,
     get_admin_sub_keyboard,
@@ -19,6 +21,13 @@ from keyboards.admin import (
     get_admin_artist_card_keyboard,
     get_admin_artist_delete_confirm_keyboard,
     get_admin_artist_popularity_choice_keyboard,
+    get_admin_promos_menu_keyboard,
+    get_admin_promo_type_keyboard,
+    get_admin_promo_discount_mode_keyboard,
+    get_admin_promo_duration_keyboard,
+    get_admin_promo_confirm_keyboard,
+    get_admin_promos_list_keyboard,
+    get_admin_promo_card_keyboard,
 )
 from services.admin_alerts import check_treblo_credits_and_alert, extract_treblo_credits
 from services.treblo import treblo_client
@@ -1113,3 +1122,706 @@ async def process_new_artist_finish(callback: CallbackQuery, state: FSMContext) 
         parse_mode="HTML",
     )
     await callback.answer()
+
+
+# ---------------------------------------------------------
+# PROMO CODES ADMIN MANAGEMENT
+# ---------------------------------------------------------
+@admin_router.callback_query(F.data == "admin_promos")
+async def show_admin_promos_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+    await state.clear()
+    promos = await db.get_all_promo_codes()
+    active_count = sum(1 for p in promos if p.get("is_active"))
+    total_count = len(promos)
+
+    text = (
+        "🎟 <b>Управление промокодами</b>\n\n"
+        f"📊 Всего промокодов: <b>{total_count}</b> (активных: <b>{active_count}</b>)\n\n"
+        "Здесь вы можете создать новые промокоды со скидкой или бонусом генераций, "
+        "а также просмотреть текущие промокоды и статистику их использований."
+    )
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_admin_promos_menu_keyboard(),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@admin_router.callback_query(F.data == "admin_promo_create")
+async def start_promo_creation(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+    await state.clear()
+    await state.set_state(AdminStates.waiting_for_promo_type)
+    text = (
+        "🎟 <b>Создание промокода (Шаг 1 из 5)</b>\n\n"
+        "Выберите, какую награду даёт промокод:\n\n"
+        "• <b>Процент скидки:</b> уменьшает цену при покупке пакетов генераций.\n"
+        "• <b>Генерации (бонус):</b> моментально начисляет подарочные генерации на баланс."
+    )
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_admin_promo_type_keyboard(),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@admin_router.callback_query(F.data.startswith("admin_promo_type:"))
+async def process_promo_type_choice(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+    p_type = callback.data.split(":")[1]
+    await state.update_data(promo_type=p_type)
+
+    if p_type == "credits":
+        await state.set_state(AdminStates.waiting_for_promo_credits_amount)
+        text = (
+            "🎵 <b>Количество бонусных генераций (Шаг 2 из 5)</b>\n\n"
+            "Введите целое положительное число генераций, которые получит пользователь при активации промокода (например: <code>10</code>, <code>25</code>, <code>50</code>):"
+        )
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_admin_cancel_keyboard("admin_promos"),
+            parse_mode="HTML",
+        )
+    else:
+        # Discount mode selection
+        await state.set_state(AdminStates.waiting_for_promo_discount_mode)
+        text = (
+            "📊 <b>Способ применения скидки (Шаг 2 из 5)</b>\n\n"
+            "Выберите тип скидки:\n\n"
+            "• <b>Фиксированный % (на все):</b> единый процент скидки для всех тарифов.\n"
+            "• <b>Для каждого тарифа отдельно:</b> возможность задать разный процент на каждый пакет (например, 0% на дешёвый и 40% на самый дорогой)."
+        )
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_admin_promo_discount_mode_keyboard(),
+            parse_mode="HTML",
+        )
+    await callback.answer()
+
+
+@admin_router.callback_query(F.data.startswith("admin_promo_disc_mode:"))
+async def process_promo_discount_mode_choice(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+    d_mode = callback.data.split(":")[1]
+    await state.update_data(discount_mode=d_mode)
+
+    if d_mode == "fixed":
+        await state.set_state(AdminStates.waiting_for_promo_fixed_percent)
+        text = (
+            "🎯 <b>Фиксированный процент скидки (Шаг 2 из 5)</b>\n\n"
+            "Введите размер скидки в процентах от <b>1</b> до <b>99</b>% (например: <code>15</code>, <code>30</code>):\n\n"
+            "⚠️ <i>100% указывать запрещено.</i>"
+        )
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_admin_cancel_keyboard("admin_promos"),
+            parse_mode="HTML",
+        )
+    else:
+        # Custom mode per pack
+        db_tariffs = await db.get_all_tariffs()
+        tariffs = db_tariffs if db_tariffs else TARIFF_PACKAGES
+        await state.update_data(
+            custom_tariffs=[dict(t) for t in tariffs],
+            custom_pack_index=0,
+            custom_packs_discounts={},
+        )
+        await state.set_state(AdminStates.waiting_for_promo_custom_pack)
+        first_t = tariffs[0]
+        text = (
+            f"🎛 <b>Настройка скидки для тарифа 1 из {len(tariffs)}</b>\n\n"
+            f"Пакет: {first_t['emoji']} <b>{first_t['title']}</b> ({int(first_t['price'])} ₽)\n\n"
+            "Введите процент скидки для этого тарифа (от <b>0</b> до <b>99</b>%):\n"
+            "<i>(0 означает отсутствие скидки на этот пакет)</i>"
+        )
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_admin_cancel_keyboard("admin_promos"),
+            parse_mode="HTML",
+        )
+    await callback.answer()
+
+
+@admin_router.message(AdminStates.waiting_for_promo_fixed_percent)
+async def process_promo_fixed_percent_input(message: Message, state: FSMContext) -> None:
+    if not is_admin(message.from_user.id):
+        return
+    raw = (message.text or "").strip().replace("%", "")
+    try:
+        val = int(raw)
+    except ValueError:
+        await message.answer("⚠️ Введите целое число от 1 до 99 (например: 20):", reply_markup=get_admin_cancel_keyboard("admin_promos"))
+        return
+
+    if val == 100:
+        await message.answer("❌ <b>100% указывать запрещено!</b>\nСкидка должна быть в пределах от 1 до 99%.\nПопробуйте ещё раз:", parse_mode="HTML", reply_markup=get_admin_cancel_keyboard("admin_promos"))
+        return
+    if val < 1 or val > 99:
+        await message.answer("❌ Процент должен быть от 1 до 99%. Введите число заново:", reply_markup=get_admin_cancel_keyboard("admin_promos"))
+        return
+
+    await state.update_data(fixed_percent=val)
+    await state.set_state(AdminStates.waiting_for_promo_duration)
+    await message.answer(
+        "⏱ <b>Срок действия промокода (Шаг 3 из 5)</b>\n\n"
+        "Выберите, до какого момента промокод будет доступен для активации:\n\n"
+        "<i>(После того как пользователь активирует промокод, у него будет ровно 24 часа на совершение 1 покупки по скидке)</i>",
+        reply_markup=get_admin_promo_duration_keyboard(),
+        parse_mode="HTML",
+    )
+
+
+@admin_router.message(AdminStates.waiting_for_promo_custom_pack)
+async def process_promo_custom_pack_input(message: Message, state: FSMContext) -> None:
+    if not is_admin(message.from_user.id):
+        return
+    raw = (message.text or "").strip().replace("%", "")
+    try:
+        val = int(raw)
+    except ValueError:
+        await message.answer("⚠️ Введите целое число от 0 до 99:", reply_markup=get_admin_cancel_keyboard("admin_promos"))
+        return
+
+    if val == 100:
+        await message.answer("❌ <b>100% указывать запрещено!</b>\nВведите от 0 до 99%:", parse_mode="HTML", reply_markup=get_admin_cancel_keyboard("admin_promos"))
+        return
+    if val < 0 or val > 99:
+        await message.answer("❌ Процент должен быть в диапазоне от 0 до 99%. Попробуйте заново:", reply_markup=get_admin_cancel_keyboard("admin_promos"))
+        return
+
+    data = await state.get_data()
+    tariffs = data.get("custom_tariffs", [])
+    idx = data.get("custom_pack_index", 0)
+    discounts = data.get("custom_packs_discounts", {})
+
+    cur_t = tariffs[idx]
+    discounts[cur_t["id"]] = val
+    next_idx = idx + 1
+
+    if next_idx < len(tariffs):
+        await state.update_data(custom_pack_index=next_idx, custom_packs_discounts=discounts)
+        next_t = tariffs[next_idx]
+        text = (
+            f"🎛 <b>Настройка скидки для тарифа {next_idx + 1} из {len(tariffs)}</b>\n\n"
+            f"Пакет: {next_t['emoji']} <b>{next_t['title']}</b> ({int(next_t['price'])} ₽)\n\n"
+            "Введите процент скидки для этого тарифа (от <b>0</b> до <b>99</b>%):\n"
+            "<i>(0 означает отсутствие скидки на этот пакет)</i>"
+        )
+        await message.answer(text, reply_markup=get_admin_cancel_keyboard("admin_promos"), parse_mode="HTML")
+    else:
+        # Check if at least one tariff has percent > 0
+        if not any(v > 0 for v in discounts.values()):
+            await state.update_data(custom_pack_index=0, custom_packs_discounts={})
+            first_t = tariffs[0]
+            await message.answer(
+                "❌ <b>Ошибка:</b> хотя бы на один тариф должна быть скидка больше 0%!\n"
+                "Давайте настроим скидки заново.\n\n"
+                f"Пакет: {first_t['emoji']} <b>{first_t['title']}</b> ({int(first_t['price'])} ₽)\n"
+                "Введите процент скидки (0-99%):",
+                reply_markup=get_admin_cancel_keyboard("admin_promos"),
+                parse_mode="HTML",
+            )
+            return
+
+        await state.update_data(custom_packs_discounts=discounts)
+        await state.set_state(AdminStates.waiting_for_promo_duration)
+        await message.answer(
+            "⏱ <b>Срок действия промокода (Шаг 3 из 5)</b>\n\n"
+            "Выберите, до какого момента промокод будет доступен для активации:\n\n"
+            "<i>(После того как пользователь активирует промокод, у него будет ровно 24 часа на совершение 1 покупки по скидке)</i>",
+            reply_markup=get_admin_promo_duration_keyboard(),
+            parse_mode="HTML",
+        )
+
+
+@admin_router.message(AdminStates.waiting_for_promo_credits_amount)
+async def process_promo_credits_amount_input(message: Message, state: FSMContext) -> None:
+    if not is_admin(message.from_user.id):
+        return
+    raw = (message.text or "").strip()
+    try:
+        val = int(raw)
+    except ValueError:
+        await message.answer("⚠️ Введите целое положительное число (например: 15):", reply_markup=get_admin_cancel_keyboard("admin_promos"))
+        return
+
+    if val <= 0:
+        await message.answer("❌ Количество генераций должно быть больше 0. Попробуйте заново:", reply_markup=get_admin_cancel_keyboard("admin_promos"))
+        return
+
+    await state.update_data(credits_amount=val)
+    await state.set_state(AdminStates.waiting_for_promo_duration)
+    await message.answer(
+        "⏱ <b>Срок действия промокода (Шаг 3 из 5)</b>\n\n"
+        "Выберите, до какого момента промокод будет доступен для активации:",
+        reply_markup=get_admin_promo_duration_keyboard(),
+        parse_mode="HTML",
+    )
+
+
+@admin_router.callback_query(F.data.startswith("admin_promo_dur:"))
+async def process_promo_duration_preset(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+    dur_key = callback.data.split(":")[1]
+
+    if dur_key == "manual":
+        await state.set_state(AdminStates.waiting_for_promo_custom_date)
+        text = (
+            "✏️ <b>Ввод даты окончания вручную (Шаг 3 из 5)</b>\n\n"
+            "Введите дату и время окончания действия промокода по Московскому времени (МСК) в формате:\n"
+            "<code>ДД.ММ.ГГГГ ЧЧ:ММ</code>\n\n"
+            "<i>Пример: 31.12.2026 23:59</i>"
+        )
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_admin_cancel_keyboard("admin_promos"),
+            parse_mode="HTML",
+        )
+        await callback.answer()
+        return
+
+    now = get_msk_now()
+    if dur_key == "1h":
+        exp_dt = now + timedelta(hours=1)
+    elif dur_key == "3h":
+        exp_dt = now + timedelta(hours=3)
+    elif dur_key == "5h":
+        exp_dt = now + timedelta(hours=5)
+    elif dur_key == "12h":
+        exp_dt = now + timedelta(hours=12)
+    elif dur_key == "24h":
+        exp_dt = now + timedelta(hours=24)
+    elif dur_key == "3d":
+        exp_dt = now + timedelta(days=3)
+    elif dur_key == "7d":
+        exp_dt = now + timedelta(days=7)
+    elif dur_key == "30d":
+        exp_dt = now + timedelta(days=30)
+    else:
+        exp_dt = now + timedelta(hours=24)
+
+    exp_str = exp_dt.strftime("%Y-%m-%d %H:%M:%S")
+    await state.update_data(expires_at=exp_str)
+    await state.set_state(AdminStates.waiting_for_promo_max_activations)
+
+    text = (
+        "👥 <b>Количество активаций (Шаг 4 из 5)</b>\n\n"
+        f"Выбран срок до: <b>{exp_dt.strftime('%d.%m.%Y %H:%M')} (МСК)</b>\n\n"
+        "Введите максимальное количество пользователей, которые смогут активировать этот промокод (целое положительное число, например: <code>100</code>):"
+    )
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_admin_cancel_keyboard("admin_promos"),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@admin_router.message(AdminStates.waiting_for_promo_custom_date)
+async def process_promo_custom_date_input(message: Message, state: FSMContext) -> None:
+    if not is_admin(message.from_user.id):
+        return
+    text = (message.text or "").strip()
+    try:
+        parsed_dt = datetime.strptime(text, "%d.%m.%Y %H:%M").replace(tzinfo=MSK_TZ)
+    except ValueError:
+        await message.answer(
+            "⚠️ <b>Неверный формат даты!</b>\n\n"
+            "Введите дату и время строго в формате <code>ДД.ММ.ГГГГ ЧЧ:ММ</code> (например: <code>31.12.2026 23:59</code>):",
+            reply_markup=get_admin_cancel_keyboard("admin_promos"),
+            parse_mode="HTML",
+        )
+        return
+
+    now = get_msk_now()
+    if parsed_dt <= now:
+        await message.answer(
+            "⚠️ <b>Дата окончания должна быть в будущем!</b>\n"
+            f"Текущее московское время: {now.strftime('%d.%m.%Y %H:%M')}.\n\n"
+            "Пожалуйста, введите дату заново:",
+            reply_markup=get_admin_cancel_keyboard("admin_promos"),
+            parse_mode="HTML",
+        )
+        return
+
+    exp_str = parsed_dt.strftime("%Y-%m-%d %H:%M:%S")
+    await state.update_data(expires_at=exp_str)
+    await state.set_state(AdminStates.waiting_for_promo_max_activations)
+
+    await message.answer(
+        "👥 <b>Количество активаций (Шаг 4 из 5)</b>\n\n"
+        f"Выбран срок до: <b>{parsed_dt.strftime('%d.%m.%Y %H:%M')} (МСК)</b>\n\n"
+        "Введите максимальное количество пользователей, которые смогут активировать промокод (например: <code>100</code>):",
+        reply_markup=get_admin_cancel_keyboard("admin_promos"),
+        parse_mode="HTML",
+    )
+
+
+@admin_router.message(AdminStates.waiting_for_promo_max_activations)
+async def process_promo_max_activations_input(message: Message, state: FSMContext) -> None:
+    if not is_admin(message.from_user.id):
+        return
+    raw = (message.text or "").strip()
+    try:
+        val = int(raw)
+    except ValueError:
+        await message.answer("⚠️ Введите целое положительное число (например: 100):", reply_markup=get_admin_cancel_keyboard("admin_promos"))
+        return
+
+    if val <= 0:
+        await message.answer("❌ Количество должно быть больше 0. Попробуйте заново:", reply_markup=get_admin_cancel_keyboard("admin_promos"))
+        return
+
+    await state.update_data(max_activations=val)
+    await state.set_state(AdminStates.waiting_for_promo_code_text)
+
+    text = (
+        "🔤 <b>Текст промокода (Шаг 5 из 5)</b>\n\n"
+        "Введите секретный код промокода, который будут вводить пользователи.\n\n"
+        "⚠️ <b>Правила:</b>\n"
+        "• Пробелы строго запрещены!\n"
+        "• Регистр имеет значение (например, <code>MUSIC2026</code> и <code>music2026</code> — разные коды).\n"
+        "• Разрешены русские и английские буквы, цифры и символы.\n"
+        "• Длина от 2 до 50 символов."
+    )
+    await message.answer(
+        text,
+        reply_markup=get_admin_cancel_keyboard("admin_promos"),
+        parse_mode="HTML",
+    )
+
+
+@admin_router.message(AdminStates.waiting_for_promo_code_text)
+async def process_promo_code_text_input(message: Message, state: FSMContext) -> None:
+    if not is_admin(message.from_user.id):
+        return
+    raw_code = (message.text or "").strip()
+
+    if not raw_code:
+        await message.answer("⚠️ Введите текст промокода:")
+        return
+
+    if " " in raw_code or "\t" in raw_code or "\n" in raw_code:
+        await message.answer(
+            "❌ <b>Промокод не должен содержать пробелов!</b>\n\n"
+            "Пожалуйста, введите промокод заново без пробелов:",
+            reply_markup=get_admin_cancel_keyboard("admin_promos"),
+            parse_mode="HTML",
+        )
+        return
+
+    if len(raw_code) < 2 or len(raw_code) > 50:
+        await message.answer(
+            "❌ Длина промокода должна быть от 2 до 50 символов. Попробуйте заново:",
+            reply_markup=get_admin_cancel_keyboard("admin_promos"),
+            parse_mode="HTML",
+        )
+        return
+
+    existing = await db.get_promo_code_by_code(raw_code)
+    if existing:
+        await message.answer(
+            "❌ <b>Промокод с таким текстом уже существует в базе данных!</b>\n\n"
+            "Придумайте другой промокод:",
+            reply_markup=get_admin_cancel_keyboard("admin_promos"),
+            parse_mode="HTML",
+        )
+        return
+
+    await state.update_data(code=raw_code)
+    await state.set_state(AdminStates.waiting_for_promo_confirm)
+
+    data = await state.get_data()
+    p_type = data.get("promo_type")
+    max_act = data.get("max_activations")
+    exp_str = data.get("expires_at", "")
+    try:
+        exp_formatted = datetime.strptime(exp_str, "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        exp_formatted = exp_str
+
+    if p_type == "credits":
+        reward_desc = f"🎁 <b>+{data.get('credits_amount')}</b> подарочных генераций"
+        promo_type_name = "Бонусные генерации"
+        fair_note = "Начисляются сразу на баланс при активации."
+    else:
+        promo_type_name = "Скидка на пополнение"
+        d_mode = data.get("discount_mode")
+        db_tariffs = await db.get_all_tariffs()
+        tariffs = db_tariffs if db_tariffs else TARIFF_PACKAGES
+
+        lines = []
+        if d_mode == "fixed":
+            pct = int(data.get("fixed_percent", 0))
+            for t in tariffs:
+                orig_pr = float(t["price"])
+                disc_pr = max(1, round(orig_pr * (1 - pct / 100)))
+                per_track = format_per_track_badge(disc_pr, t.get("credits", 1))
+                lines.append(
+                    f"  • {t['emoji']} <b>{t['title']}</b>: <s>{int(orig_pr)} ₽</s> ➔ <b>{int(disc_pr)} ₽</b> "
+                    f"<i>(-{pct}%, {per_track})</i>"
+                )
+            reward_desc = f"🏷 <b>Скидка {pct}% на все тарифы (итоговые цены для пользователя):</b>\n" + "\n".join(lines)
+        else:
+            packs_map = data.get("custom_packs_discounts", {})
+            for t in tariffs:
+                orig_pr = float(t["price"])
+                pct = int(packs_map.get(t["id"], 0))
+                if pct > 0:
+                    disc_pr = max(1, round(orig_pr * (1 - pct / 100)))
+                    per_track = format_per_track_badge(disc_pr, t.get("credits", 1))
+                    lines.append(
+                        f"  • {t['emoji']} <b>{t['title']}</b>: <s>{int(orig_pr)} ₽</s> ➔ <b>{int(disc_pr)} ₽</b> "
+                        f"<i>(-{pct}%, {per_track})</i>"
+                    )
+                else:
+                    per_track = format_per_track_badge(orig_pr, t.get("credits", 1))
+                    lines.append(
+                        f"  • {t['emoji']} <b>{t['title']}</b>: <b>{int(orig_pr)} ₽</b> <i>(без скидки, {per_track})</i>"
+                    )
+            reward_desc = "🏷 <b>Дифференцированная скидка (итоговые цены для пользователя):</b>\n" + "\n".join(lines)
+
+        fair_note = "Ровно 24 часа с момента ввода (на 1 покупку)."
+
+    confirm_text = (
+        "📋 <b>Проверьте данные нового промокода:</b>\n\n"
+        f"🎟 <b>Код:</b> <code>{raw_code}</code>\n"
+        f"📌 <b>Тип:</b> {promo_type_name}\n"
+        f"🎁 <b>Вознаграждение:</b>\n{reward_desc}\n\n"
+        f"⏱ <b>Доступен для активации до:</b> <b>{exp_formatted} (МСК)</b>\n"
+        f"👥 <b>Лимит активаций:</b> <b>{max_act}</b> человек (по 1 разу на пользователя)\n"
+        f"⏳ <b>Срок действия скидки:</b> {fair_note}\n\n"
+        "<b>Вы точно уверены, что хотите создать этот промокод?</b>"
+    )
+
+    await message.answer(
+        confirm_text,
+        reply_markup=get_admin_promo_confirm_keyboard(),
+        parse_mode="HTML",
+    )
+
+
+@admin_router.callback_query(F.data == "admin_promo_confirm_create")
+async def process_promo_confirm_create(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+
+    data = await state.get_data()
+    code = data.get("code")
+    p_type = data.get("promo_type")
+    max_act = data.get("max_activations", 100)
+    expires_at = data.get("expires_at")
+
+    if not code or not p_type or not expires_at:
+        await state.clear()
+        await callback.answer("Ошибка сессии создания промокода.", show_alert=True)
+        return
+
+    if p_type == "credits":
+        db_type = "credits"
+        reward_data = {"credits": data.get("credits_amount", 0)}
+    else:
+        d_mode = data.get("discount_mode", "fixed")
+        if d_mode == "fixed":
+            db_type = "discount_fixed"
+            reward_data = {
+                "discount_mode": "fixed",
+                "percent": data.get("fixed_percent", 0),
+            }
+        else:
+            db_type = "discount_custom"
+            reward_data = {
+                "discount_mode": "custom",
+                "packs": data.get("custom_packs_discounts", {}),
+            }
+
+    promo_id = await db.create_promo_code(
+        code=code,
+        promo_type=db_type,
+        reward_data=reward_data,
+        max_activations=max_act,
+        expires_at=expires_at,
+    )
+    await state.clear()
+
+    finish_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🔎 Посмотреть промокод", callback_data=f"admin_promo_card:{promo_id}:1"),
+            ],
+            [
+                InlineKeyboardButton(text="📋 К списку промокодов", callback_data="admin_promo_list:1"),
+                InlineKeyboardButton(text="◀️ Меню промокодов", callback_data="admin_promos"),
+            ],
+        ]
+    )
+
+    await callback.message.edit_text(
+        f"🎉 <b>Промокод «{code}» успешно создан и активен!</b>\n\n"
+        "Пользователи могут вводить его в профиле и получать скидки или генерации.",
+        reply_markup=finish_kb,
+        parse_mode="HTML",
+    )
+    await callback.answer("Промокод создан!")
+
+
+PROMOS_PER_PAGE = 6
+
+
+@admin_router.callback_query(F.data.startswith("admin_promo_list:"))
+async def show_admin_promos_list(callback: CallbackQuery) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+
+    page = int(callback.data.split(":")[1])
+    promos = await db.get_all_promo_codes()
+
+    total_pages = max(1, (len(promos) + PROMOS_PER_PAGE - 1) // PROMOS_PER_PAGE)
+    page = max(1, min(page, total_pages))
+
+    start = (page - 1) * PROMOS_PER_PAGE
+    page_promos = promos[start : start + PROMOS_PER_PAGE]
+
+    text = (
+        f"📋 <b>Список промокодов (Стр. {page}/{total_pages})</b>\n\n"
+        "🟢 — активен | 🔴 — деактивирован\n"
+        "Нажмите на промокод для просмотра подробностей и управления:"
+    )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_admin_promos_list_keyboard(page_promos, page, total_pages),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@admin_router.callback_query(F.data == "admin_promo_noop")
+async def callback_admin_promo_noop(callback: CallbackQuery) -> None:
+    await callback.answer()
+
+
+@admin_router.callback_query(F.data.startswith("admin_promo_card:"))
+async def show_admin_promo_card(callback: CallbackQuery) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+
+    parts = callback.data.split(":")
+    promo_id = int(parts[1])
+    page = int(parts[2]) if len(parts) > 2 else 1
+
+    promo = await db.get_promo_code_by_id(promo_id)
+    if not promo:
+        await callback.answer("Промокод не найден", show_alert=True)
+        return
+
+    now = get_msk_now()
+    now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+
+    is_active = bool(promo.get("is_active"))
+    cur_act = promo.get("current_activations", 0)
+    max_act = promo.get("max_activations", 0)
+    expires_at = promo.get("expires_at", "")
+
+    # Status detection
+    if not is_active:
+        status_str = "🔴 <b>Деактивирован администратором</b>"
+    elif expires_at <= now_str:
+        status_str = "⏳ <b>Истёк срок действия</b>"
+    elif cur_act >= max_act:
+        status_str = "🏁 <b>Лимит активаций исчерпан</b>"
+    else:
+        status_str = "🟢 <b>Активен (доступен для ввода)</b>"
+
+    p_type = promo.get("promo_type")
+    rdata = promo.get("reward_data") or {}
+
+    if p_type == "credits":
+        type_str = "Бонусные генерации"
+        reward_str = f"🎁 +{rdata.get('credits', 0)} генераций"
+    elif p_type == "discount_fixed":
+        type_str = "Фиксированная скидка"
+        pct = int(rdata.get("percent", 0))
+        db_tariffs = await db.get_all_tariffs()
+        tariffs = db_tariffs if db_tariffs else TARIFF_PACKAGES
+        lines = []
+        for t in tariffs:
+            orig_pr = float(t["price"])
+            disc_pr = max(1, round(orig_pr * (1 - pct / 100)))
+            per_track = format_per_track_badge(disc_pr, t.get("credits", 1))
+            lines.append(
+                f"  • {t['emoji']} <b>{t['title']}</b>: <s>{int(orig_pr)} ₽</s> ➔ <b>{int(disc_pr)} ₽</b> "
+                f"<i>(-{pct}%, {per_track})</i>"
+            )
+        reward_str = f"🏷 <b>-{pct}% на все тарифы (цены для пользователя):</b>\n" + "\n".join(lines)
+    else:
+        type_str = "Дифференцированная скидка"
+        db_tariffs = await db.get_all_tariffs()
+        tariffs = db_tariffs if db_tariffs else TARIFF_PACKAGES
+        packs_map = rdata.get("packs", {})
+        lines = []
+        for t in tariffs:
+            orig_pr = float(t["price"])
+            pct = int(packs_map.get(t["id"], 0))
+            if pct > 0:
+                disc_pr = max(1, round(orig_pr * (1 - pct / 100)))
+                per_track = format_per_track_badge(disc_pr, t.get("credits", 1))
+                lines.append(
+                    f"  • {t['emoji']} <b>{t['title']}</b>: <s>{int(orig_pr)} ₽</s> ➔ <b>{int(disc_pr)} ₽</b> "
+                    f"<i>(-{pct}%, {per_track})</i>"
+                )
+            else:
+                per_track = format_per_track_badge(orig_pr, t.get("credits", 1))
+                lines.append(
+                    f"  • {t['emoji']} <b>{t['title']}</b>: <b>{int(orig_pr)} ₽</b> <i>(без скидки, {per_track})</i>"
+                )
+        reward_str = "🏷 <b>Дифференцированная скидка (цены для пользователя):</b>\n" + "\n".join(lines)
+
+    try:
+        exp_formatted = datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        exp_formatted = expires_at
+
+    text = (
+        f"🎟 <b>Промокод:</b> <code>{promo['code']}</code>\n\n"
+        f"📊 <b>Статус:</b> {status_str}\n"
+        f"📌 <b>Тип:</b> {type_str}\n"
+        f"🎁 <b>Награда:</b>\n{reward_str}\n\n"
+        f"👥 <b>Использования:</b> <b>{cur_act} / {max_act}</b> чел.\n"
+        f"⏱ <b>Действует до:</b> {exp_formatted} (МСК)\n"
+        f"📅 <b>Создан:</b> {promo.get('created_at', '')}\n\n"
+        "💡 <i>При деактивации промокода запрещаются новые активации. Пользователи, уже успевшие активировать его, сохраняют свою 24ч скидку.</i>"
+    )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_admin_promo_card_keyboard(promo_id, is_active=is_active, page=page),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@admin_router.callback_query(F.data.startswith("admin_promo_deact:"))
+async def process_admin_promo_deact(callback: CallbackQuery) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+
+    parts = callback.data.split(":")
+    promo_id = int(parts[1])
+    page = int(parts[2]) if len(parts) > 2 else 1
+
+    await db.deactivate_promo_code(promo_id)
+    await callback.answer("⛔ Промокод деактивирован. Новые активации заблокированы.", show_alert=True)
+
+    # Re-render card with updated status
+    promo = await db.get_promo_code_by_id(promo_id)
+    if promo:
+        await show_admin_promo_card(callback)

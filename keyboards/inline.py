@@ -307,14 +307,46 @@ def get_after_generation_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def get_profile_keyboard() -> InlineKeyboardMarkup:
+def get_profile_keyboard(has_discount: bool = False) -> InlineKeyboardMarkup:
+    topup_btn_text = "🔥 Использовать скидку" if has_discount else "💳 Пополнить баланс"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="💳 Пополнить баланс", callback_data="menu_topup"),
+                InlineKeyboardButton(text=topup_btn_text, callback_data="menu_topup"),
             ],
             [
-                InlineKeyboardButton(text="👥 Реферальная программа", callback_data="menu_referral"),
+                InlineKeyboardButton(text="🎟 Ввести промокод", callback_data="promo_enter"),
+                InlineKeyboardButton(text="👥 Партнёрам", callback_data="menu_referral"),
+            ],
+        ]
+    )
+
+
+def get_promo_replace_keyboard(promo_code: str) -> InlineKeyboardMarkup:
+    """Confirmation keyboard when user already has an active discount."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Да, применить новый промокод",
+                    callback_data=f"promo_replace_confirm:{promo_code}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="❌ Оставить текущую скидку",
+                    callback_data="promo_replace_cancel",
+                ),
+            ],
+        ]
+    )
+
+
+def get_promo_input_cancel_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="◀️ Назад в профиль", callback_data="menu_profile"),
             ],
         ]
     )
@@ -394,9 +426,15 @@ def get_tariffs_keyboard(
         if not badge or "Тест" in badge:
             badge = format_per_track_badge(t.get("price", 0), t.get("credits", 1))
 
+        if t.get("discount_percent") and t["discount_percent"] > 0:
+            disc_pct = t["discount_percent"]
+            btn_text = f"{t['emoji']} {t['title']} — {int(t['price'])} ₽ (-{disc_pct}%, {badge})"
+        else:
+            btn_text = f"{t['emoji']} {t['title']} — {int(t['price'])} ₽ ({badge})"
+
         buttons.append([
             InlineKeyboardButton(
-                text=f"{t['emoji']} {t['title']} — {int(t['price'])} ₽ ({badge})",
+                text=btn_text,
                 callback_data=f"buy_pack:{t['id']}",
             )
         ])

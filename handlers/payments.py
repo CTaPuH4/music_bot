@@ -26,22 +26,80 @@ payments_router = Router()
 @payments_router.message(Command("pay"))
 @payments_router.message(F.text.in_({"💳 Пополнить", "💳 Пополнить баланс"}))
 async def show_tariffs(event: Message | CallbackQuery) -> None:
-    """Displays available generation packages and pricing."""
+    """Displays available generation packages and pricing with active promo discounts applied."""
+    user_id = event.from_user.id
     db_tariffs = await db.get_all_tariffs()
-    tariffs_to_show = db_tariffs if db_tariffs else TARIFF_PACKAGES
+    tariffs_raw = db_tariffs if db_tariffs else TARIFF_PACKAGES
+
+    active_discount = await db.get_user_active_discount(user_id)
+
+    tariffs_to_show = []
+    discount_banner = ""
+
+    if active_discount:
+        ddata = active_discount.get("discount_data") or {}
+        dmode = ddata.get("discount_mode") or ddata.get("type", "fixed")
+        rem_str = active_discount.get("remaining_time_str", "24 ч.")
+        max_disc = 0
+
+        for t in tariffs_raw:
+            t_copy = dict(t)
+            if dmode == "fixed":
+                pct = int(ddata.get("percent", 0))
+            else:
+                packs_map = ddata.get("packs", {})
+                pct = int(packs_map.get(t["id"], 0))
+
+            if pct > 0:
+                orig_price = float(t["price"])
+                disc_price = max(1, round(orig_price * (1 - pct / 100)))
+                t_copy["original_price"] = orig_price
+                t_copy["price"] = disc_price
+                t_copy["discount_percent"] = pct
+                t_copy["badge"] = format_per_track_badge(disc_price, t.get("credits", 1))
+                if pct > max_disc:
+                    max_disc = pct
+            else:
+                t_copy["discount_percent"] = 0
+                t_copy["badge"] = format_per_track_badge(t.get("price", 0), t.get("credits", 1))
+            tariffs_to_show.append(t_copy)
+
+        active_code = active_discount.get("code")
+        code_tag = f"«{active_code}»" if active_code else ""
+        if dmode == "fixed":
+            pct_val = ddata.get("percent", max_disc)
+            discount_banner = (
+                f"🔥 <b>У вас действует промокод {code_tag}: скидка {pct_val}% на всё!</b>\n"
+                f"⏳ <i>Осталось времени: {rem_str} (скидка действует на 1 покупку)</i>\n\n"
+            )
+        else:
+            discount_banner = (
+                f"🔥 <b>У вас действует промокод {code_tag} со скидкой на тарифы!</b>\n"
+                f"⏳ <i>Осталось времени: {rem_str} (скидка действует на 1 покупку)</i>\n\n"
+            )
+    else:
+        tariffs_to_show = [dict(t) for t in tariffs_raw]
 
     tariff_lines = []
     for t in tariffs_to_show:
         badge = t.get("badge")
         if not badge or "Тест" in badge:
             badge = format_per_track_badge(t.get("price", 0), t.get("credits", 1))
-        tariff_lines.append(
-            f"{t['emoji']} <b>{t['title']}</b> — <b>{int(t['price'])} ₽</b> <i>({badge})</i>"
-        )
+
+        if t.get("discount_percent") and t["discount_percent"] > 0:
+            tariff_lines.append(
+                f"{t['emoji']} <b>{t['title']}</b> — <s>{int(t['original_price'])} ₽</s> <b>{int(t['price'])} ₽</b> "
+                f"<i>(-{t['discount_percent']}%, {badge})</i>"
+            )
+        else:
+            tariff_lines.append(
+                f"{t['emoji']} <b>{t['title']}</b> — <b>{int(t['price'])} ₽</b> <i>({badge})</i>"
+            )
     tariffs_summary = "\n".join(tariff_lines)
 
     text = (
         "💳 <b>Пополнение баланса</b>\n\n"
+        f"{discount_banner}"
         "Выберите подходящий пакет генераций музыки.\n"
         "Оплата производится онлайн через защищенный шлюз <b>ЮKassa</b> "
         "(банковские карты РФ, СБП, SberPay, Mir Pay, ЮMoney):\n\n"
@@ -66,7 +124,7 @@ async def show_tariffs(event: Message | CallbackQuery) -> None:
 
 @payments_router.callback_query(F.data.startswith("buy_pack:"))
 async def handle_buy_package(callback: CallbackQuery) -> None:
-    """Initiates payment creation via YooKassa API."""
+    """Initiates payment creation via YooKassa API with discount calculations and pending invoice cancellation."""
     pack_id = callback.data.split(":")[1]
     pack = await db.get_tariff(pack_id) or get_tariff_by_id(pack_id)
 
@@ -76,15 +134,28 @@ async def handle_buy_package(callback: CallbackQuery) -> None:
 
     user_id = callback.from_user.id
 
-    # Anti-spam protection: prevent flooding YooKassa with unpaid invoices
-    pending_count = await db.get_user_pending_count(user_id, max_age_minutes=15)
-    if pending_count >= 3:
-        await callback.answer(
-            "⚠️ У вас уже есть 3 активных неоплаченных счёта.\n"
-            "Пожалуйста, оплатите один из ранее созданных или подождите несколько минут.",
-            show_alert=True,
-        )
-        return
+    # Automatically cancel stale pending payments for user so old invoices don't hang around
+    await db.cancel_user_pending_payments(user_id)
+
+    # Check for active discount
+    active_discount = await db.get_user_active_discount(user_id)
+    final_price = float(pack["price"])
+    activation_id = None
+    discount_note = ""
+
+    if active_discount:
+        ddata = active_discount.get("discount_data") or {}
+        dmode = ddata.get("discount_mode") or ddata.get("type", "fixed")
+        if dmode == "fixed":
+            pct = int(ddata.get("percent", 0))
+        else:
+            packs_map = ddata.get("packs", {})
+            pct = int(packs_map.get(pack["id"], 0))
+
+        if pct > 0:
+            final_price = max(1.0, float(round(final_price * (1 - pct / 100))))
+            activation_id = active_discount["id"]
+            discount_note = f"🏷 <b>Скидка:</b> -{pct}% (<s>{int(pack['price'])} ₽</s>)\n"
 
     if not yookassa_client.is_configured:
         await callback.answer(
@@ -99,13 +170,14 @@ async def handle_buy_package(callback: CallbackQuery) -> None:
 
     try:
         payment = await yookassa_client.create_payment(
-            amount_rub=pack["price"],
+            amount_rub=final_price,
             description=description,
             return_url=return_url,
             metadata={
                 "user_id": user_id,
                 "credits": pack["credits"],
                 "pack_id": pack["id"],
+                "activation_id": activation_id,
             },
         )
     except YooKassaError as exc:
@@ -124,15 +196,19 @@ async def handle_buy_package(callback: CallbackQuery) -> None:
     await db.create_payment_record(
         payment_id=payment_id,
         user_id=user_id,
-        amount=pack["price"],
+        amount=final_price,
         credits=pack["credits"],
+        promo_activation_id=activation_id,
     )
+
+    pack_per_track = format_per_track_badge(final_price, pack["credits"])
 
     text = (
         f"🧾 <b>Счет на оплату готов!</b>\n\n"
         f"📦 <b>Тариф:</b> {pack['title']}\n"
         f"⚡ <b>Количество:</b> +{pack['credits']} генераций\n"
-        f"💰 <b>Сумма к оплате:</b> <b>{int(pack['price'])} ₽</b>\n\n"
+        f"{discount_note}"
+        f"💰 <b>Сумма к оплате:</b> <b>{int(final_price)} ₽</b> <i>({pack_per_track})</i>\n\n"
         "1️⃣ Нажмите кнопку <b>«💳 Оплатить через ЮKassa»</b> ниже и завершите оплату удобным способом.\n"
         "2️⃣ После успешной оплаты вернитесь в бот и нажмите <b>«🔄 Проверить оплату»</b>."
     )

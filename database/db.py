@@ -1,14 +1,21 @@
 import json
 import logging
 import re
-from datetime import datetime
-from typing import Optional, Dict, Any, List
+from datetime import datetime, timezone, timedelta
+from typing import Optional, Dict, Any, List, Tuple
 
 import aiosqlite
 
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+MSK_TZ = timezone(timedelta(hours=3))
+
+
+def get_msk_now() -> datetime:
+    """Returns current datetime in Moscow Timezone (UTC+3)."""
+    return datetime.now(MSK_TZ)
 
 
 def format_per_track_badge(price: float, credits: int) -> str:
@@ -336,6 +343,46 @@ class Database:
                 )
             """)
 
+            # Create promo_codes table (exact case-sensitive code matching)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS promo_codes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    code TEXT UNIQUE NOT NULL COLLATE BINARY,
+                    promo_type TEXT NOT NULL,
+                    reward_data TEXT NOT NULL,
+                    max_activations INTEGER NOT NULL,
+                    current_activations INTEGER DEFAULT 0,
+                    expires_at TEXT NOT NULL,
+                    is_active INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Ensure promo_activation_id in payments table
+            try:
+                await db.execute("ALTER TABLE payments ADD COLUMN promo_activation_id INTEGER")
+            except Exception:
+                pass
+
+            # Create user_promo_activations table (tracks 24h window, usage, reminders)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS user_promo_activations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    promo_code_id INTEGER NOT NULL,
+                    promo_type TEXT NOT NULL,
+                    discount_data TEXT,
+                    activated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TEXT,
+                    is_used INTEGER DEFAULT 0,
+                    reminder_sent INTEGER DEFAULT 0,
+                    used_at TIMESTAMP,
+                    payment_id TEXT,
+                    FOREIGN KEY (promo_code_id) REFERENCES promo_codes (id),
+                    FOREIGN KEY (user_id) REFERENCES users (user_id)
+                )
+            """)
+
             await db.commit()
             logger.info("Database initialized successfully at %s", self.db_path)
 
@@ -627,14 +674,15 @@ class Database:
         user_id: int,
         amount: float,
         credits: int,
+        promo_activation_id: Optional[int] = None,
     ) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
-                INSERT INTO payments (payment_id, user_id, amount, credits, status)
-                VALUES (?, ?, ?, ?, 'pending')
+                INSERT INTO payments (payment_id, user_id, amount, credits, status, promo_activation_id)
+                VALUES (?, ?, ?, ?, 'pending', ?)
                 """,
-                (payment_id, user_id, amount, credits),
+                (payment_id, user_id, amount, credits, promo_activation_id),
             )
             await db.commit()
 
@@ -1061,6 +1109,329 @@ class Database:
             c_slug = ch_clean.lstrip("@")
             if not c_slug.startswith("-"):
                 await self.set_setting("required_channel_url", f"https://t.me/{c_slug}")
+
+    # ---------------------------------------------------------
+    # PROMO CODES MANAGEMENT
+    # ---------------------------------------------------------
+    async def create_promo_code(
+        self,
+        code: str,
+        promo_type: str,
+        reward_data: Dict[str, Any],
+        max_activations: int,
+        expires_at: Any,
+    ) -> int:
+        """
+        Creates a new promo code.
+        promo_type: 'discount_fixed', 'discount_custom', or 'credits'
+        reward_data: dict (e.g. {'percent': 20} or {'packs': {'pack_5': 0, ...}} or {'credits': 15})
+        expires_at: datetime or str in MSK timezone
+        """
+        if isinstance(expires_at, datetime):
+            exp_str = expires_at.strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            exp_str = str(expires_at).strip()
+        reward_json = json.dumps(reward_data, ensure_ascii=False)
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                INSERT INTO promo_codes (code, promo_type, reward_data, max_activations, current_activations, expires_at, is_active)
+                VALUES (?, ?, ?, ?, 0, ?, 1)
+                """,
+                (code.strip(), promo_type, reward_json, max_activations, exp_str),
+            )
+            await db.commit()
+            return cursor.lastrowid
+
+    async def get_promo_code_by_code(self, code: str) -> Optional[Dict[str, Any]]:
+        """Finds promo code with exact case-sensitive match (COLLATE BINARY)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM promo_codes WHERE code = ?", (code.strip(),)
+            ) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return None
+                d = dict(row)
+                try:
+                    d["reward_data"] = json.loads(d["reward_data"])
+                except Exception:
+                    pass
+                return d
+
+    async def get_promo_code_by_id(self, promo_id: int) -> Optional[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM promo_codes WHERE id = ?", (promo_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return None
+                d = dict(row)
+                try:
+                    d["reward_data"] = json.loads(d["reward_data"])
+                except Exception:
+                    pass
+                return d
+
+    async def get_all_promo_codes(self, only_active: bool = False) -> List[Dict[str, Any]]:
+        """Returns promo codes sorted by id DESC."""
+        query = (
+            "SELECT * FROM promo_codes WHERE is_active = 1 ORDER BY id DESC"
+            if only_active
+            else "SELECT * FROM promo_codes ORDER BY id DESC"
+        )
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(query) as cursor:
+                rows = await cursor.fetchall()
+                res = []
+                for r in rows:
+                    d = dict(r)
+                    try:
+                        d["reward_data"] = json.loads(d["reward_data"])
+                    except Exception:
+                        pass
+                    res.append(d)
+                return res
+
+    async def deactivate_promo_code(self, promo_id: int) -> bool:
+        """Deactivates a promo code so no new users can activate it."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "UPDATE promo_codes SET is_active = 0 WHERE id = ?", (promo_id,)
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def has_user_activated_promo(self, user_id: int, promo_code_id: int) -> bool:
+        """Checks if user has ever activated this specific promo code."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT 1 FROM user_promo_activations WHERE user_id = ? AND promo_code_id = ? LIMIT 1",
+                (user_id, promo_code_id),
+            ) as cursor:
+                return (await cursor.fetchone()) is not None
+
+    async def activate_promo_code_for_user(
+        self, user_id: int, promo: Dict[str, Any]
+    ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """
+        Attempts to activate promo code for user.
+        Returns:
+            (success: bool, status_code: str, data: Optional[Dict])
+        """
+        now = get_msk_now()
+        now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+        promo_id = promo["id"]
+
+        # Check if already activated by this user
+        if await self.has_user_activated_promo(user_id, promo_id):
+            return False, "already_used", None
+
+        # Check if user already has an active discount
+        if promo["promo_type"].startswith("discount"):
+            active_disc = await self.get_user_active_discount(user_id)
+            if active_disc:
+                return False, "already_has_discount", active_disc
+
+        # Attempt atomic reservation: increment current_activations if valid
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                UPDATE promo_codes
+                SET current_activations = current_activations + 1
+                WHERE id = ?
+                  AND is_active = 1
+                  AND current_activations < max_activations
+                  AND expires_at > ?
+                """,
+                (promo_id, now_str),
+            )
+            if cursor.rowcount == 0:
+                # Determine specific failure reason
+                async with db.execute(
+                    "SELECT is_active, current_activations, max_activations, expires_at FROM promo_codes WHERE id = ?",
+                    (promo_id,),
+                ) as check_cur:
+                    check_row = await check_cur.fetchone()
+                    if not check_row:
+                        return False, "not_found", None
+                    if not check_row[0]:
+                        return False, "inactive", None
+                    if check_row[1] >= check_row[2]:
+                        return False, "limit_reached", None
+                    if check_row[3] <= now_str:
+                        return False, "expired", None
+                    return False, "failed", None
+
+            await db.commit()
+
+        # Promo activation slot secured! Now process reward
+        promo_type = promo["promo_type"]
+        reward_data = promo["reward_data"]
+
+        if promo_type == "credits":
+            credits_to_give = int(reward_data.get("credits", 0))
+            await self.add_gift_balance(user_id, credits_to_give)
+
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute(
+                    """
+                    INSERT INTO user_promo_activations (user_id, promo_code_id, promo_type, discount_data, expires_at, is_used, used_at)
+                    VALUES (?, ?, ?, ?, NULL, 1, CURRENT_TIMESTAMP)
+                    """,
+                    (user_id, promo_id, promo_type, json.dumps(reward_data, ensure_ascii=False)),
+                )
+                await db.commit()
+            return True, "credits_success", {"credits": credits_to_give}
+
+        else:
+            # Discount promo code: grants 24 hours of active discount
+            exp_24h = (now + timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute(
+                    """
+                    INSERT INTO user_promo_activations (user_id, promo_code_id, promo_type, discount_data, expires_at, is_used, reminder_sent)
+                    VALUES (?, ?, ?, ?, ?, 0, 0)
+                    """,
+                    (user_id, promo_id, promo_type, json.dumps(reward_data, ensure_ascii=False), exp_24h),
+                )
+                await db.commit()
+                activation_id = cursor.lastrowid
+
+            return True, "discount_success", {
+                "activation_id": activation_id,
+                "promo_type": promo_type,
+                "reward_data": reward_data,
+                "expires_at": exp_24h,
+            }
+
+    async def replace_active_discount_with_promo(
+        self, user_id: int, promo: Dict[str, Any]
+    ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """Supersedes user's existing active discount and activates the new one."""
+        await self.supersede_user_active_discount(user_id)
+        return await self.activate_promo_code_for_user(user_id, promo)
+
+    async def supersede_user_active_discount(self, user_id: int) -> None:
+        """Marks any currently active discounts for user as superseded (is_used = 2)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE user_promo_activations SET is_used = 2 WHERE user_id = ? AND is_used = 0",
+                (user_id,),
+            )
+            await db.commit()
+
+    async def get_user_active_discount(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Returns active discount for user if valid and not expired.
+        Includes parsed discount_data, promo code string and calculated remaining time.
+        """
+        now = get_msk_now()
+        now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT a.*, p.code as code, p.promo_type as promo_code_type
+                FROM user_promo_activations a
+                LEFT JOIN promo_codes p ON a.promo_code_id = p.id
+                WHERE a.user_id = ? AND a.is_used = 0 AND a.expires_at > ?
+                ORDER BY a.id DESC LIMIT 1
+                """,
+                (user_id, now_str),
+            ) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return None
+                d = dict(row)
+                try:
+                    d["discount_data"] = json.loads(d["discount_data"])
+                except Exception:
+                    pass
+
+                # Calculate remaining time
+                try:
+                    exp_dt = datetime.strptime(d["expires_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=MSK_TZ)
+                    diff = exp_dt - now
+                    total_sec = max(0, int(diff.total_seconds()))
+                    hrs = total_sec // 3600
+                    mins = (total_sec % 3600) // 60
+                    d["remaining_seconds"] = total_sec
+                    d["remaining_time_str"] = f"{hrs} ч. {mins} мин." if hrs > 0 else f"{mins} мин."
+                except Exception:
+                    d["remaining_seconds"] = 0
+                    d["remaining_time_str"] = ""
+
+                return d
+
+    async def mark_user_promo_used(self, activation_id: int, payment_id: str) -> None:
+        """Marks a discount activation as consumed upon completed payment."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE user_promo_activations
+                SET is_used = 1, used_at = CURRENT_TIMESTAMP, payment_id = ?
+                WHERE id = ? AND is_used = 0
+                """,
+                (payment_id, activation_id),
+            )
+            await db.commit()
+
+    async def get_pending_discount_reminders(self) -> List[Dict[str, Any]]:
+        """
+        Finds discount activations where remaining time is <= 2 hours (<= 7200 sec),
+        expires_at > now, is_used == 0, and reminder_sent == 0.
+        """
+        now = get_msk_now()
+        now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+        two_hours_later = (now + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT a.*, p.code as code, p.promo_type as promo_code_type
+                FROM user_promo_activations a
+                LEFT JOIN promo_codes p ON a.promo_code_id = p.id
+                WHERE a.is_used = 0
+                  AND a.reminder_sent = 0
+                  AND a.expires_at > ?
+                  AND a.expires_at <= ?
+                """,
+                (now_str, two_hours_later),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                res = []
+                for r in rows:
+                    d = dict(r)
+                    try:
+                        d["discount_data"] = json.loads(d["discount_data"])
+                    except Exception:
+                        pass
+                    res.append(d)
+                return res
+
+    async def mark_discount_reminder_sent(self, activation_id: int) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE user_promo_activations SET reminder_sent = 1 WHERE id = ?",
+                (activation_id,),
+            )
+            await db.commit()
+
+    async def cancel_user_pending_payments(self, user_id: int) -> None:
+        """Cancels any previous pending payments of user so only 1 active payment attempt exists."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE payments SET status = 'canceled', updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND status = 'pending'",
+                (user_id,),
+            )
+            await db.commit()
 
 
 db = Database()

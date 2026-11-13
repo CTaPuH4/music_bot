@@ -56,6 +56,63 @@ async def yookassa_webhook_handler(request: web.Request) -> web.Response:
     return web.Response(status=200, text="OK")
 
 
+async def check_expiring_promo_reminders(bot: Bot) -> None:
+    """
+    Finds discount activations where remaining time is <= 2 hours,
+    reminds the user that the discount will expire soon, and marks reminder_sent = 1.
+    """
+    try:
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        pending = await db.get_pending_discount_reminders()
+        for act in pending:
+            act_id = act["id"]
+            user_id = act["user_id"]
+            ddata = act.get("discount_data") or {}
+            dmode = ddata.get("discount_mode") or ddata.get("type", "fixed")
+
+            active_code = act.get("code")
+            if active_code:
+                if dmode == "fixed" and ddata.get("percent"):
+                    pct_str = f"промокод «{active_code}» (-{ddata.get('percent')}%)"
+                else:
+                    pct_str = f"промокод «{active_code}»"
+            else:
+                pct_str = "промокод на скидку"
+
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="💳 Использовать скидку", callback_data="menu_topup"
+                        ),
+                    ],
+                ]
+            )
+
+            text = (
+                "⏰ <b>Ваша скидка скоро сгорит!</b>\n\n"
+                f"Вы ранее активировали {pct_str}, но ещё не воспользовались им.\n"
+                "До окончания действия скидки осталось <b>меньше 2 часов</b>!\n\n"
+                "Успейте пополнить баланс по специальной цене, пока промокод активен:"
+            )
+
+            try:
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=text,
+                    reply_markup=kb,
+                    parse_mode="HTML",
+                )
+                logger.info("Sent expiring promo reminder to user %s (activation %s)", user_id, act_id)
+            except Exception as send_err:
+                logger.debug("Failed to send promo reminder to %s: %s", user_id, send_err)
+            finally:
+                await db.mark_discount_reminder_sent(act_id)
+
+    except Exception as exc:
+        logger.debug("Error in check_expiring_promo_reminders: %s", exc)
+
+
 async def background_payments_poller(bot: Bot) -> None:
     """
     Safety net background worker:
@@ -86,6 +143,12 @@ async def background_payments_poller(bot: Bot) -> None:
                 await db.cleanup_stale_payments(max_age_hours=2)
             except Exception as e:
                 logger.debug("Cleanup stale payments error: %s", e)
+
+            # Check expiring promo discount reminders (push 2 hours before expiration)
+            try:
+                await check_expiring_promo_reminders(bot)
+            except Exception as e:
+                logger.debug("Expiring promo reminders check: %s", e)
 
             # Check YooKassa pending payments
             if yookassa_client.is_configured:

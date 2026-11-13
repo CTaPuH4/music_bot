@@ -16,6 +16,9 @@ def get_admin_main_keyboard(sub_enabled: bool = False) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="💳 Настройка цен тарифов", callback_data="admin_prices"),
             ],
             [
+                InlineKeyboardButton(text="🎟 Управление промокодами", callback_data="admin_promos"),
+            ],
+            [
                 InlineKeyboardButton(text="🎤 Управление артистами", callback_data="admin_artists:popular:1"),
             ],
             [
@@ -286,3 +289,145 @@ def get_admin_artist_popularity_choice_keyboard() -> InlineKeyboardMarkup:
             ],
         ]
     )
+
+
+# ---------------------------------------------------------
+# PROMO CODES ADMIN KEYBOARDS
+# ---------------------------------------------------------
+def get_admin_promos_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="➕ Создать промокод", callback_data="admin_promo_create"),
+            ],
+            [
+                InlineKeyboardButton(text="📋 Список промокодов", callback_data="admin_promo_list:1"),
+            ],
+            [
+                InlineKeyboardButton(text="◀️ Назад в админку", callback_data="admin_menu"),
+            ],
+        ]
+    )
+
+
+def get_admin_promo_type_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📊 Процент скидки", callback_data="admin_promo_type:discount"),
+                InlineKeyboardButton(text="🎵 Генерации (бонус)", callback_data="admin_promo_type:credits"),
+            ],
+            [
+                InlineKeyboardButton(text="❌ Отмена", callback_data="admin_promos"),
+            ],
+        ]
+    )
+
+
+def get_admin_promo_discount_mode_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🎯 Фиксированный % (на все)", callback_data="admin_promo_disc_mode:fixed"),
+            ],
+            [
+                InlineKeyboardButton(text="🎛 Для каждого тарифа отдельно", callback_data="admin_promo_disc_mode:custom"),
+            ],
+            [
+                InlineKeyboardButton(text="◀️ Назад", callback_data="admin_promo_create"),
+            ],
+        ]
+    )
+
+
+def get_admin_promo_duration_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="⏱ 1 час", callback_data="admin_promo_dur:1h"),
+                InlineKeyboardButton(text="⏱ 3 часа", callback_data="admin_promo_dur:3h"),
+            ],
+            [
+                InlineKeyboardButton(text="⏱ 5 часов", callback_data="admin_promo_dur:5h"),
+                InlineKeyboardButton(text="⏱ 12 часов", callback_data="admin_promo_dur:12h"),
+            ],
+            [
+                InlineKeyboardButton(text="⏱ 24 часа", callback_data="admin_promo_dur:24h"),
+                InlineKeyboardButton(text="⏱ 3 дня", callback_data="admin_promo_dur:3d"),
+            ],
+            [
+                InlineKeyboardButton(text="⏱ 7 дней", callback_data="admin_promo_dur:7d"),
+                InlineKeyboardButton(text="⏱ 30 дней", callback_data="admin_promo_dur:30d"),
+            ],
+            [
+                InlineKeyboardButton(text="✏️ Ввести дату вручную (МСК)", callback_data="admin_promo_dur:manual"),
+            ],
+            [
+                InlineKeyboardButton(text="❌ Отмена", callback_data="admin_promos"),
+            ],
+        ]
+    )
+
+
+def get_admin_promo_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Да, создать промокод", callback_data="admin_promo_confirm_create"),
+            ],
+            [
+                InlineKeyboardButton(text="✏️ Заполнить заново", callback_data="admin_promo_create"),
+                InlineKeyboardButton(text="❌ Отмена", callback_data="admin_promos"),
+            ],
+        ]
+    )
+
+
+def get_admin_promos_list_keyboard(
+    promos: List[Dict[str, Any]], page: int, total_pages: int
+) -> InlineKeyboardMarkup:
+    buttons = []
+    for p in promos:
+        status_icon = "🟢" if p.get("is_active") else "🔴"
+        p_type = p.get("promo_type")
+        if p_type == "credits":
+            type_label = f"+{p.get('reward_data', {}).get('credits', 0)} ген."
+        elif p_type == "discount_fixed":
+            type_label = f"-{p.get('reward_data', {}).get('percent', 0)}%"
+        else:
+            type_label = "Дифф. %"
+
+        btn_text = f"{status_icon} {p['code']} ({type_label}, {p['current_activations']}/{p['max_activations']})"
+        buttons.append([
+            InlineKeyboardButton(text=btn_text, callback_data=f"admin_promo_card:{p['id']}:{page}")
+        ])
+
+    # Pagination
+    nav_row = []
+    if page > 1:
+        nav_row.append(InlineKeyboardButton(text="⬅️", callback_data=f"admin_promo_list:{page - 1}"))
+    nav_row.append(InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="admin_promo_noop"))
+    if page < total_pages:
+        nav_row.append(InlineKeyboardButton(text="➡️", callback_data=f"admin_promo_list:{page + 1}"))
+    if len(nav_row) > 1:
+        buttons.append(nav_row)
+
+    buttons.append([
+        InlineKeyboardButton(text="➕ Создать промокод", callback_data="admin_promo_create"),
+    ])
+    buttons.append([
+        InlineKeyboardButton(text="◀️ Назад в промокоды", callback_data="admin_promos"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_admin_promo_card_keyboard(promo_id: int, is_active: bool, page: int = 1) -> InlineKeyboardMarkup:
+    buttons = []
+    if is_active:
+        buttons.append([
+            InlineKeyboardButton(text="⛔ Деактивировать промокод", callback_data=f"admin_promo_deact:{promo_id}:{page}"),
+        ])
+    buttons.append([
+        InlineKeyboardButton(text="◀️ Назад к списку", callback_data=f"admin_promo_list:{page}"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)

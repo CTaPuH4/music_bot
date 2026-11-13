@@ -22,3 +22,15 @@ class AdminStates(StatesGroup):
     # Mandatory channel subscription settings
     waiting_for_sub_channel = State()
     waiting_for_sub_channel_url = State()
+
+    # Promo codes wizard
+    waiting_for_promo_type = State()
+    waiting_for_promo_discount_mode = State()
+    waiting_for_promo_fixed_percent = State()
+    waiting_for_promo_custom_pack = State()
+    waiting_for_promo_credits_amount = State()
+    waiting_for_promo_duration = State()
+    waiting_for_promo_custom_date = State()
+    waiting_for_promo_max_activations = State()
+    waiting_for_promo_code_text = State()
+    waiting_for_promo_confirm = State()
