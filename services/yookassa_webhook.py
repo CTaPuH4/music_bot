@@ -8,6 +8,7 @@ from config import settings
 from database.db import db
 from services.payment_service import process_successful_payment, process_canceled_payment
 from services.yookassa import yookassa_client
+from services.cryptobot import cryptobot_client
 
 logger = logging.getLogger(__name__)
 
@@ -150,11 +151,31 @@ async def background_payments_poller(bot: Bot) -> None:
             except Exception as e:
                 logger.debug("Expiring promo reminders check: %s", e)
 
-            # Check YooKassa pending payments
-            if yookassa_client.is_configured:
-                pending_payments = await db.get_pending_payments(limit=30)
-                for p in pending_payments:
-                    pid = p["payment_id"]
+            # Check pending payments (YooKassa & CryptoBot)
+            pending_payments = await db.get_pending_payments(limit=30)
+            for p in pending_payments:
+                pid = p["payment_id"]
+                provider = p.get("provider") or "yookassa"
+
+                if provider == "cryptobot" and cryptobot_client.is_configured:
+                    try:
+                        # Extract invoice_id from payment_id (e.g. cb_123456_940290714)
+                        parts = pid.split("_")
+                        invoice_id = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else None
+                        if invoice_id:
+                            inv = await cryptobot_client.get_invoice(invoice_id)
+                            if inv:
+                                st = inv.get("status")
+                                if st == "paid":
+                                    logger.info("Background poller discovered successful CryptoBot payment %s", pid)
+                                    await process_successful_payment(bot, pid)
+                                elif st == "expired":
+                                    logger.info("Background poller discovered expired CryptoBot payment %s", pid)
+                                    await process_canceled_payment(pid)
+                    except Exception as err:
+                        logger.debug("CryptoBot background check error for %s: %s", pid, err)
+
+                elif provider == "yookassa" and yookassa_client.is_configured:
                     try:
                         payment_info = await yookassa_client.get_payment(pid)
                         status = payment_info.get("status")
@@ -175,8 +196,8 @@ async def background_payments_poller(bot: Bot) -> None:
                             break
                         logger.debug("Background poller check error for %s: %s", pid, err)
 
-                    # Pacing: avoid sending bursts of requests (max ~4-5 req/sec to stay well under YooKassa limits)
-                    await asyncio.sleep(0.25)
+                # Pacing: avoid sending bursts of requests
+                await asyncio.sleep(0.25)
         except Exception as exc:
             logger.error("Unexpected error in background payments poller: %s", exc)
 

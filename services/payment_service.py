@@ -104,6 +104,14 @@ async def process_successful_payment(bot: Bot, payment_id: str) -> bool:
         except Exception as e:
             logger.debug("Failed to notify referrer %s: %s", referrer_id, e)
 
+    # Clean up invoice message if stored
+    msg_id = record.get("telegram_message_id")
+    if msg_id:
+        try:
+            await bot.delete_message(chat_id=user_id, message_id=msg_id)
+        except Exception:
+            pass
+
     # Notify user in Telegram (even if they navigated away or cleared dialog)
     success_kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -116,17 +124,44 @@ async def process_successful_payment(bot: Bot, payment_id: str) -> bool:
         ]
     )
 
+    provider = record.get("provider") or "yookassa"
+
+    if provider == "telegram_stars":
+        stars_amount = max(1, round(amount / settings.telegram_stars_rub_rate))
+        notification_text = (
+            "🎉 <b>Оплата Telegram Stars успешно завершена!</b>\n\n"
+            f"⭐ <b>Списано:</b> <b>{stars_amount} ⭐</b>\n"
+            f"⚡ <b>Вам начислено:</b> <b>+{credits_to_add} платных генераций</b>\n\n"
+            f"💰 <b>Всего генераций:</b> <b>{new_total}</b>\n"
+            f"├── 💳 Платные: {paid_bal}\n"
+            f"└── 🎁 Подарочные: {gift_bal}\n\n"
+            "Приступайте к созданию новых треков прямо сейчас 🎧"
+        )
+    elif provider == "cryptobot":
+        crypto_amount = max(0.1, round(amount / settings.cryptobot_rub_rate, 2))
+        notification_text = (
+            "🎉 <b>Оплата криптовалютой успешно завершена!</b>\n\n"
+            f"💎 <b>Оплачено:</b> <b>{crypto_amount} USDT</b> <i>(~{int(amount)} ₽)</i>\n"
+            f"⚡ <b>Вам начислено:</b> <b>+{credits_to_add} платных генераций</b>\n\n"
+            f"💰 <b>Всего генераций:</b> <b>{new_total}</b>\n"
+            f"├── 💳 Платные: {paid_bal}\n"
+            f"└── 🎁 Подарочные: {gift_bal}\n\n"
+            "Приступайте к созданию новых треков прямо сейчас 🎧"
+        )
+    else:
+        notification_text = (
+            f"🎉 <b>Оплата {int(amount)} ₽ успешно зачислена!</b>\n\n"
+            f"⚡ <b>Вам начислено:</b> <b>+{credits_to_add} платных генераций</b>\n\n"
+            f"💰 <b>Всего генераций:</b> <b>{new_total}</b>\n"
+            f"├── 💳 Платные: {paid_bal}\n"
+            f"└── 🎁 Подарочные: {gift_bal}\n\n"
+            "Приступайте к созданию новых треков прямо сейчас 🎧"
+        )
+
     try:
         await bot.send_message(
             chat_id=user_id,
-            text=(
-                f"🎉 <b>Оплата {int(amount)} ₽ успешно зачислена!</b>\n\n"
-                f"⚡ Вам начислено: <b>+{credits_to_add} платных генераций</b>\n"
-                f"💰 <b>Всего генераций:</b> <b>{new_total}</b>\n"
-                f"├── 💳 Платные: {paid_bal}\n"
-                f"└── 🎁 Подарочные: {gift_bal}\n\n"
-                "Приступайте к созданию новых треков прямо сейчас 🎧"
-            ),
+            text=notification_text,
             reply_markup=success_kb,
             parse_mode="HTML",
         )

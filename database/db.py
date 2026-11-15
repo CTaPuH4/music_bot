@@ -237,6 +237,26 @@ class Database:
                 )
             """)
 
+            try:
+                await db.execute("ALTER TABLE payments ADD COLUMN promo_activation_id INTEGER")
+            except Exception:
+                pass
+
+            try:
+                await db.execute("ALTER TABLE payments ADD COLUMN provider TEXT DEFAULT 'yookassa'")
+            except Exception:
+                pass
+
+            try:
+                await db.execute("ALTER TABLE payments ADD COLUMN currency TEXT DEFAULT 'RUB'")
+            except Exception:
+                pass
+
+            try:
+                await db.execute("ALTER TABLE payments ADD COLUMN telegram_message_id INTEGER")
+            except Exception:
+                pass
+
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS tariffs (
                     id TEXT PRIMARY KEY,
@@ -687,14 +707,16 @@ class Database:
         amount: float,
         credits: int,
         promo_activation_id: Optional[int] = None,
+        provider: str = "yookassa",
+        currency: str = "RUB",
     ) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
-                INSERT INTO payments (payment_id, user_id, amount, credits, status, promo_activation_id)
-                VALUES (?, ?, ?, ?, 'pending', ?)
+                INSERT INTO payments (payment_id, user_id, amount, credits, status, promo_activation_id, provider, currency)
+                VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)
                 """,
-                (payment_id, user_id, amount, credits, promo_activation_id),
+                (payment_id, user_id, amount, credits, promo_activation_id, provider, currency),
             )
             await db.commit()
 
@@ -706,6 +728,15 @@ class Database:
             ) as cursor:
                 row = await cursor.fetchone()
                 return dict(row) if row else None
+
+    async def update_payment_telegram_message_id(self, payment_id: str, message_id: int) -> None:
+        """Stores Telegram invoice message_id to allow safe deletion upon payment completion."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE payments SET telegram_message_id = ? WHERE payment_id = ?",
+                (message_id, payment_id),
+            )
+            await db.commit()
 
     async def mark_payment_succeeded(self, payment_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -1626,6 +1657,7 @@ class Database:
                 """
                 SELECT
                     p.id, p.payment_id, p.user_id, p.amount, p.credits, p.status, p.created_at, p.updated_at,
+                    p.provider, p.currency,
                     u.username, u.first_name,
                     pr.code as promo_code
                 FROM payments p

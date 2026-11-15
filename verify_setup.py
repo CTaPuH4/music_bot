@@ -25,6 +25,7 @@ try:
     import handlers.payments
     import handlers.admin
     import services.admin_alerts
+    import services.cryptobot
     import services.web_dashboard
     import services.web_server
     import main
@@ -793,6 +794,163 @@ async def test_web_dashboard():
         os.remove(test_db_file)
 
 
+async def test_multiprovider_payments():
+    from database.db import Database
+    from keyboards.inline import get_payment_methods_keyboard, get_crypto_payment_keyboard
+    from services.cryptobot import cryptobot_client
+
+    test_db_file = "test_multipay_db.db"
+    if os.path.exists(test_db_file):
+        os.remove(test_db_file)
+
+    test_db = Database(db_path=test_db_file)
+    await test_db.init()
+
+    # 1. Test creation of YooKassa, Telegram Stars, and CryptoBot payment records
+    user_id = 777777
+    await test_db.get_or_create_user(user_id, "crypto_stars_user", "Multi")
+
+    # YooKassa (RUB)
+    await test_db.create_payment_record(
+        payment_id="pay_yk_1",
+        user_id=user_id,
+        amount=490.0,
+        credits=20,
+        provider="yookassa",
+        currency="RUB",
+    )
+    # Telegram Stars (XTR)
+    await test_db.create_payment_record(
+        payment_id="pay_stars_1",
+        user_id=user_id,
+        amount=490.0,
+        credits=20,
+        provider="telegram_stars",
+        currency="XTR",
+    )
+    # CryptoBot (USDT)
+    await test_db.create_payment_record(
+        payment_id="pay_cb_1",
+        user_id=user_id,
+        amount=490.0,
+        credits=20,
+        provider="cryptobot",
+        currency="USDT",
+    )
+
+    detailed_pays = await test_db.get_all_payments_detailed(limit=10)
+    assert len(detailed_pays) == 3
+    providers = {p["payment_id"]: p["provider"] for p in detailed_pays}
+    assert providers["pay_yk_1"] == "yookassa"
+    assert providers["pay_stars_1"] == "telegram_stars"
+    assert providers["pay_cb_1"] == "cryptobot"
+
+    # 2. Test converted pricing formulas:
+    # Rate Stars = 2.0 -> 490 / 2 = 245
+    # Rate Crypto = 85.0 -> 490 / 85 = 5.76
+    rub_price = 490.0
+    stars_price = max(1, round(rub_price / config.settings.telegram_stars_rub_rate))
+    crypto_price = max(0.1, round(rub_price / config.settings.cryptobot_rub_rate, 2))
+    assert stars_price == 245
+    assert crypto_price == 5.76
+
+    # 3. Test with active promo code (e.g. 20% discount)
+    from datetime import datetime, timedelta
+    exp_time = datetime.now() + timedelta(days=1)
+    await test_db.create_promo_code(
+        code="SALE20",
+        promo_type="discount_fixed",
+        reward_data={"discount_mode": "fixed", "percent": 20},
+        max_activations=10,
+        expires_at=exp_time,
+    )
+    p_sale = await test_db.get_promo_code_by_code("SALE20")
+    success, _, _ = await test_db.activate_promo_code_for_user(user_id, p_sale)
+    assert success is True
+
+    # Test discounted price computation: 490 - 20% = 392
+    pack = {"id": "pack_20", "title": "20 треков", "price": 490.0, "credits": 20}
+    active_discount = await test_db.get_user_active_discount(user_id)
+    assert active_discount is not None
+    disc_rub = max(1.0, float(round(pack["price"] * (1 - 20 / 100))))
+    assert disc_rub == 392.0
+
+    disc_stars = max(1, round(disc_rub / config.settings.telegram_stars_rub_rate))
+    disc_crypto = max(0.1, round(disc_rub / config.settings.cryptobot_rub_rate, 2))
+    assert disc_stars == 196
+    assert disc_crypto == 4.61
+
+    # 4. Test Keyboards generation
+    kb_methods = get_payment_methods_keyboard("pack_20", disc_rub, disc_stars, disc_crypto)
+    assert any("pay_method:yookassa:pack_20" in btn.callback_data for row in kb_methods.inline_keyboard for btn in row)
+    assert any("pay_method:stars:pack_20" in btn.callback_data for row in kb_methods.inline_keyboard for btn in row)
+    assert any("pay_method:crypto:pack_20" in btn.callback_data for row in kb_methods.inline_keyboard for btn in row)
+
+    kb_crypto = get_crypto_payment_keyboard("https://t.me/CryptoBot?start=test", "cb_1_777", 1)
+    assert kb_crypto.inline_keyboard[0][0].url == "https://t.me/CryptoBot?start=test"
+    assert "check_crypto:cb_1_777:1" in kb_crypto.inline_keyboard[1][0].callback_data
+
+    # 5. Test telegram_message_id storage and update
+    await test_db.update_payment_telegram_message_id("pay_stars_1", 99123)
+    p_stars = await test_db.get_payment_record("pay_stars_1")
+    assert p_stars["telegram_message_id"] == 99123
+
+    # 6. Test double-charge prevention (succeeded payment check)
+    await test_db.mark_payment_succeeded("pay_stars_1")
+    p_succ = await test_db.get_payment_record("pay_stars_1")
+    assert p_succ["status"] == "succeeded"
+
+    # 7. Test single notification & provider-specific message formatting
+    from services.payment_service import process_successful_payment
+    from unittest.mock import AsyncMock, MagicMock
+    from database.db import db as global_db
+
+    orig_path = global_db.db_path
+    global_db.db_path = test_db_file
+
+    try:
+        mock_bot = MagicMock()
+        mock_bot.send_message = AsyncMock()
+        mock_bot.delete_message = AsyncMock()
+
+        # Create new Stars payment for 2 rubles (which is 1 Star)
+        await test_db.create_payment_record(
+            payment_id="pay_stars_test",
+            user_id=user_id,
+            amount=2.0,
+            credits=5,
+            provider="telegram_stars",
+            currency="XTR",
+        )
+        await test_db.update_payment_telegram_message_id("pay_stars_test", 112233)
+
+        res1 = await process_successful_payment(mock_bot, "pay_stars_test")
+        assert res1 is True
+        # Verify invoice was deleted
+        mock_bot.delete_message.assert_called_with(chat_id=user_id, message_id=112233)
+        # Verify message sent exactly once
+        assert mock_bot.send_message.call_count == 1
+        call_args = mock_bot.send_message.call_args[1]
+        msg_text = call_args["text"]
+        assert "Telegram Stars успешно завершена" in msg_text
+        assert "1 ⭐" in msg_text
+        assert "2 ₽" not in msg_text
+        assert "+5 платных генераций" in msg_text
+
+        # Second call for the same payment returns False (idempotency) and does not send message
+        res2 = await process_successful_payment(mock_bot, "pay_stars_test")
+        assert res2 is False
+        assert mock_bot.send_message.call_count == 1  # No duplicate message
+    finally:
+        global_db.db_path = orig_path
+
+    # 8. Clean up
+    if os.path.exists(test_db_file):
+        os.remove(test_db_file)
+
+    print("[OK] Multi-provider payments: YooKassa, Telegram Stars (rate 2), and CryptoBot (rate 85) passed.")
+
+
 async def run_all():
     await test_db()
     await test_promo_codes()
@@ -803,6 +961,7 @@ async def run_all():
     await test_admin_module()
     await test_custom_tags()
     await test_web_dashboard()
+    await test_multiprovider_payments()
     print("\nALL LOCAL COMPONENT CHECKS PASSED!")
 
 

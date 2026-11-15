@@ -41,6 +41,16 @@ class Settings(BaseSettings):
     yookassa_base_url: str = "https://api.yookassa.ru/v3"
     referral_reward_percent: int = 10  # 10% bonus to referrer upon purchase
 
+    # CryptoBot Settings (@CryptoBot / Crypto Pay API)
+    cryptobot_api_token: str = ""
+    cryptobot_testnet: bool = False
+    cryptobot_rub_rate: float = 85.0  # 1 USDT = 85 RUB
+    cryptobot_enabled: bool = True
+
+    # Telegram Stars Settings
+    telegram_stars_rub_rate: float = 2.0  # 1 Star = 2 RUB
+    telegram_stars_enabled: bool = True
+
     # Webhook server settings for YooKassa (optional, not needed if using background poller)
     webhook_enabled: bool = False
     webhook_host: str = "0.0.0.0"

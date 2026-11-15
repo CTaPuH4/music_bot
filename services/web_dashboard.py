@@ -99,6 +99,15 @@ def render_base_layout(
         else ""
     )
 
+    clock_badge = """
+    <div class="d-none d-md-flex align-items-center me-3 px-3 py-1 rounded bg-dark border border-secondary text-light font-monospace" style="font-size: 0.8rem;">
+        <span class="badge bg-success p-1 rounded-circle me-2" style="width: 7px; height: 7px; display: inline-block;"></span>
+        <i class="bi bi-clock text-info me-1"></i>
+        <span id="navbarClock">--:--:--</span>
+        <span class="text-muted ms-1" style="font-size: 0.7rem;">МСК</span>
+    </div>
+    """ if user_id else ""
+
     nav_items = [
         ("/", "dashboard", '<i class="bi bi-speedometer2 me-1"></i> Дашборд'),
         ("/payments", "payments", '<i class="bi bi-credit-card me-1"></i> Платежи'),
@@ -206,6 +215,7 @@ def render_base_layout(
                     {nav_links_html}
                 </ul>
                 <div class="d-flex align-items-center">
+                    {clock_badge}
                     {user_badge}
                 </div>
             </div>
@@ -245,6 +255,34 @@ def render_base_layout(
                 last: "»"
             }}
         }};
+
+        // Live ticking server clock (Europe/Moscow MSK UTC+3)
+        const mskFormatter = new Intl.DateTimeFormat('ru-RU', {{
+            timeZone: 'Europe/Moscow',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false
+        }});
+
+        function updateLiveClock() {{
+            try {{
+                const fullStr = mskFormatter.format(new Date());
+                const parts = fullStr.split(', ');
+                const timePart = parts.length > 1 ? parts[1] : (fullStr.split(' ')[1] || fullStr);
+                const navEl = document.getElementById('navbarClock');
+                if (navEl) navEl.textContent = timePart;
+                const liveEl = document.getElementById('liveServerClock');
+                if (liveEl) liveEl.textContent = fullStr;
+            }} catch (e) {{
+                console.error(e);
+            }}
+        }}
+        setInterval(updateLiveClock, 1000);
+        updateLiveClock();
     </script>
     {extra_scripts}
 </body>
@@ -408,7 +446,8 @@ def render_dashboard_page(stats: Dict[str, Any], chart_data: Dict[str, Any], use
             </div>
             <div class="col-12 col-md-4 text-md-end">
                 <span class="text-muted"><i class="bi bi-clock me-1"></i>Время сервера (МСК):</span>
-                <span class="fw-semibold text-white">{datetime.now().strftime('%d.%m.%Y %H:%M')}</span>
+                <span class="badge bg-success p-1 rounded-circle me-1" style="width: 7px; height: 7px; display: inline-block;"></span>
+                <span id="liveServerClock" class="fw-semibold text-white font-monospace">--.--.---- --:--:--</span>
             </div>
         </div>
     </div>
@@ -516,7 +555,13 @@ def render_dashboard_page(stats: Dict[str, Any], chart_data: Dict[str, Any], use
 
 
 def render_payments_page(payments: List[Dict[str, Any]], user_id: int) -> str:
-    """Renders the payments table page with DataTables sorting, searching, and CSV export."""
+    """Renders the payments table page with DataTables sorting, searching, status filter buttons, and CSV export."""
+    count_all = len(payments)
+    count_succeeded = sum(1 for p in payments if p.get("status") == "succeeded")
+    count_pending = sum(1 for p in payments if p.get("status") == "pending")
+    count_canceled = sum(1 for p in payments if p.get("status") == "canceled")
+    count_active = count_all - count_canceled
+
     rows_html = ""
     for p in payments:
         pid = p.get("id")
@@ -547,8 +592,16 @@ def render_payments_page(payments: List[Dict[str, Any]], user_id: int) -> str:
         yk_id = p.get("payment_id") or "—"
         yk_short = (yk_id[:8] + "..." + yk_id[-4:]) if len(yk_id) > 14 else yk_id
 
+        provider = p.get("provider") or "yookassa"
+        if provider == "telegram_stars":
+            prov_badge = '<span class="badge bg-warning text-dark me-1"><i class="bi bi-star-fill me-1"></i>Stars</span>'
+        elif provider == "cryptobot":
+            prov_badge = '<span class="badge bg-info-subtle text-info border border-info-subtle me-1"><i class="bi bi-currency-bitcoin me-1"></i>Crypto</span>'
+        else:
+            prov_badge = '<span class="badge bg-primary-subtle text-primary border border-primary-subtle me-1"><i class="bi bi-credit-card me-1"></i>ЮKassa</span>'
+
         rows_html += f"""
-        <tr>
+        <tr data-status="{status}">
             <td class="text-muted fw-bold">#{pid}</td>
             <td>{date_str}</td>
             <td>{user_info}</td>
@@ -556,18 +609,49 @@ def render_payments_page(payments: List[Dict[str, Any]], user_id: int) -> str:
             <td><span class="badge bg-dark border border-secondary">{credits} треков</span></td>
             <td>{promo}</td>
             <td>{status_badge}</td>
-            <td><code class="text-muted" style="font-size: 0.75rem;" title="{html.escape(yk_id)}">{html.escape(yk_short)}</code></td>
+            <td>{prov_badge}<code class="text-muted" style="font-size: 0.75rem;" title="{html.escape(yk_id)}">{html.escape(yk_short)}</code></td>
         </tr>
         """
 
     content = f"""
-    <div class="d-flex justify-content-between align-items-center mb-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
         <div>
             <h2 class="h3 fw-bold mb-1">История платежей</h2>
-            <p class="text-muted mb-0">Все транзакции YooKassa с возможностью поиска, фильтрации и выгрузки</p>
+            <p class="text-muted mb-0">Все транзакции YooKassa, Telegram Stars и CryptoBot с фильтрами и выгрузкой</p>
         </div>
         <div>
-            <a href="/payments/export.csv" class="btn btn-success btn-sm"><i class="bi bi-file-earmark-spreadsheet me-1"></i>Скачать CSV</a>
+            <a id="csvExportBtn" href="/payments/export.csv?filter=hide-canceled" class="btn btn-success btn-sm">
+                <i class="bi bi-file-earmark-spreadsheet me-1"></i>Скачать CSV
+            </a>
+        </div>
+    </div>
+
+    <!-- STATUS FILTER BAR -->
+    <div class="card card-custom p-3 mb-3">
+        <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
+            <div class="d-flex align-items-center flex-wrap gap-2">
+                <span class="text-muted small fw-bold me-1"><i class="bi bi-funnel me-1 text-primary"></i>Фильтр статуса:</span>
+                <div class="btn-group btn-group-sm" role="group" id="paymentStatusFilters">
+                    <button type="button" class="btn btn-outline-info active" data-filter="hide-canceled">
+                        <i class="bi bi-eye-slash me-1"></i>Скрыть отменённые <span class="badge bg-info-subtle text-info ms-1">{count_active}</span>
+                    </button>
+                    <button type="button" class="btn btn-outline-success" data-filter="succeeded">
+                        <i class="bi bi-check-circle me-1"></i>Только оплаченные <span class="badge bg-success-subtle text-success ms-1">{count_succeeded}</span>
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary" data-filter="all">
+                        Все заказы <span class="badge bg-secondary ms-1">{count_all}</span>
+                    </button>
+                    <button type="button" class="btn btn-outline-warning" data-filter="pending">
+                        Ожидают <span class="badge bg-warning-subtle text-warning ms-1">{count_pending}</span>
+                    </button>
+                    <button type="button" class="btn btn-outline-danger" data-filter="canceled">
+                        Отменённые <span class="badge bg-danger-subtle text-danger ms-1">{count_canceled}</span>
+                    </button>
+                </div>
+            </div>
+            <div class="text-muted small">
+                Показано: <span id="filteredCount" class="text-white fw-bold">{count_active}</span> из {count_all}
+            </div>
         </div>
     </div>
 
@@ -583,7 +667,7 @@ def render_payments_page(payments: List[Dict[str, Any]], user_id: int) -> str:
                         <th>Пакет</th>
                         <th>Промокод</th>
                         <th>Статус</th>
-                        <th>YooKassa ID</th>
+                        <th>Шлюз / Транзакция</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -597,10 +681,38 @@ def render_payments_page(payments: List[Dict[str, Any]], user_id: int) -> str:
     extra_scripts = """
     <script>
         $(document).ready(function() {
-            $('#paymentsTable').DataTable({
+            let currentPaymentFilter = 'hide-canceled';
+
+            // Custom DataTables filter for status
+            $.fn.dataTable.ext.search.push(function(settings, data, dataIndex) {
+                if (settings.nTable.id !== 'paymentsTable') return true;
+                const row = paymentsTableInstance.row(dataIndex).node();
+                const status = $(row).attr('data-status');
+                if (currentPaymentFilter === 'all') return true;
+                if (currentPaymentFilter === 'hide-canceled') return status !== 'canceled';
+                return status === currentPaymentFilter;
+            });
+
+            const paymentsTableInstance = $('#paymentsTable').DataTable({
                 order: [[0, 'desc']],
                 pageLength: 25,
                 language: ruDataTablesLang
+            });
+
+            function updateCounter() {
+                const count = paymentsTableInstance.rows({ filter: 'applied' }).count();
+                $('#filteredCount').text(count);
+                $('#csvExportBtn').attr('href', '/payments/export.csv?filter=' + currentPaymentFilter);
+            }
+
+            paymentsTableInstance.on('draw', updateCounter);
+            updateCounter();
+
+            $('#paymentStatusFilters button').on('click', function() {
+                $('#paymentStatusFilters button').removeClass('active');
+                $(this).addClass('active');
+                currentPaymentFilter = $(this).data('filter');
+                paymentsTableInstance.draw();
             });
         });
     </script>
@@ -610,31 +722,72 @@ def render_payments_page(payments: List[Dict[str, Any]], user_id: int) -> str:
 
 
 def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> str:
-    """Renders the generations history page with inline audio players."""
+    """Renders the generations history page with full prompt viewing modal and inline audio players."""
     rows_html = ""
     for g in generations:
         gid = g.get("id")
         created_at = g.get("created_at") or ""
         date_str = created_at[:16].replace("T", " ") if created_at else "—"
 
-        uname = f"@{html.escape(g['username'])}" if g.get("username") else (
-            html.escape(g.get("first_name") or "") if g.get("first_name") else f"ID {g['user_id']}"
+        raw_uname = g.get("username")
+        raw_first = g.get("first_name")
+        uid = g.get("user_id")
+        uname = f"@{html.escape(raw_uname)}" if raw_uname else (
+            html.escape(raw_first or "") if raw_first else f"ID {uid}"
         )
-        user_info = f'<a href="https://t.me/{g.get("username")}" target="_blank" class="text-decoration-none text-light">{uname}</a>' if g.get("username") else f'<span class="text-light">{uname}</span>'
+        user_info = f'<a href="https://t.me/{raw_uname}" target="_blank" class="text-decoration-none text-light">{uname}</a>' if raw_uname else f'<span class="text-light">{uname}</span>'
 
-        artist = html.escape(g.get("artist") or "")
-        genres = html.escape(g.get("genres") or "")
+        raw_artist = g.get("artist") or ""
+        raw_genres = g.get("genres") or ""
+        artist_escaped = html.escape(raw_artist)
+        genres_escaped = html.escape(raw_genres)
 
         style_info = ""
-        if artist:
-            style_info += f'<span class="badge bg-primary-subtle text-primary border border-primary-subtle me-1"><i class="bi bi-mic me-1"></i>{artist}</span>'
-        if genres:
-            style_info += f'<span class="badge bg-secondary-subtle text-light border border-secondary">{genres}</span>'
+        if artist_escaped:
+            style_info += f'<span class="badge bg-primary-subtle text-primary border border-primary-subtle me-1"><i class="bi bi-mic me-1"></i>{artist_escaped}</span>'
+        if genres_escaped:
+            style_info += f'<span class="badge bg-secondary-subtle text-light border border-secondary">{genres_escaped}</span>'
         if not style_info:
             style_info = '<span class="text-muted">—</span>'
 
-        prompt = html.escape(g.get("prompt") or "")
-        prompt_short = (prompt[:60] + "...") if len(prompt) > 60 else (prompt or "—")
+        raw_prompt = g.get("prompt") or ""
+        raw_lyrics = g.get("lyrics") or ""
+        prompt_escaped = html.escape(raw_prompt)
+        lyrics_escaped = html.escape(raw_lyrics)
+
+        prompt_clean = raw_prompt.replace("\r", " ").replace("\n", " ").strip()
+        if len(prompt_clean) > 48:
+            prompt_short = html.escape(prompt_clean[:48]) + "..."
+        else:
+            prompt_short = html.escape(prompt_clean) or "—"
+
+        is_expandable = len(raw_prompt) > 48 or bool(raw_lyrics.strip())
+
+        if is_expandable:
+            prompt_cell = f"""
+            <div class="d-flex align-items-center justify-content-between gap-1">
+                <span class="text-truncate" style="max-width: 230px;" title="{prompt_escaped}">{prompt_short}</span>
+                <button type="button" class="btn btn-sm btn-outline-info px-2 py-0 view-prompt-btn" style="font-size: 0.72rem; white-space: nowrap;"
+                        data-bs-toggle="modal" data-bs-target="#promptModal"
+                        data-gid="{gid}"
+                        data-artist="{artist_escaped}"
+                        data-genres="{genres_escaped}"
+                        data-date="{date_str}"
+                        data-user="{uname}">
+                    <i class="bi bi-arrows-angle-expand me-1"></i>Весь текст
+                </button>
+                <div class="d-none full-prompt-data">{prompt_escaped}</div>
+                <div class="d-none full-lyrics-data">{lyrics_escaped}</div>
+            </div>
+            """
+        else:
+            prompt_cell = f"""
+            <div class="d-flex align-items-center justify-content-between gap-1">
+                <span>{prompt_short}</span>
+                <div class="d-none full-prompt-data">{prompt_escaped}</div>
+                <div class="d-none full-lyrics-data">{lyrics_escaped}</div>
+            </div>
+            """
 
         mode = '<span class="badge bg-secondary">Инструментал</span>' if g.get("instrumental") else '<span class="badge bg-dark border">С вокалом</span>'
 
@@ -663,7 +816,7 @@ def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> 
             <td>{date_str}</td>
             <td>{user_info}</td>
             <td>{style_info}</td>
-            <td><span title="{prompt}">{prompt_short}</span></td>
+            <td>{prompt_cell}</td>
             <td>{mode}</td>
             <td>{status_badge}</td>
             <td>{player_html}</td>
@@ -674,7 +827,7 @@ def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> 
     <div class="d-flex justify-content-between align-items-center mb-4">
         <div>
             <h2 class="h3 fw-bold mb-1">История генераций</h2>
-            <p class="text-muted mb-0">Все созданные композиции с возможностью прослушивания треков прямо в браузере</p>
+            <p class="text-muted mb-0">Все созданные композиции с возможностью прослушивания треков и просмотра полных промтов</p>
         </div>
     </div>
 
@@ -687,7 +840,7 @@ def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> 
                         <th>Дата (МСК)</th>
                         <th>Пользователь</th>
                         <th>Артист / Жанры</th>
-                        <th>Описание / Промт</th>
+                        <th style="min-width: 280px;">Описание / Промт</th>
                         <th>Режим</th>
                         <th>Статус</th>
                         <th style="min-width: 250px;">Аудиоплеер</th>
@@ -699,6 +852,56 @@ def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> 
             </table>
         </div>
     </div>
+
+    <!-- MODAL FOR FULL PROMPT & LYRICS -->
+    <div class="modal fade" id="promptModal" tabindex="-1" aria-labelledby="promptModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content card-custom border-secondary" style="background-color: #111827;">
+                <div class="modal-header border-bottom border-secondary">
+                    <h5 class="modal-title fw-bold" id="promptModalLabel">
+                        <i class="bi bi-music-note-beamed me-2 text-info"></i>Детали генерации <span id="modalGid" class="text-white"></span>
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body p-4">
+                    <div class="row g-2 mb-3 p-2 rounded bg-dark border border-secondary text-light small">
+                        <div class="col-12 col-md-4">
+                            <span class="text-muted">Пользователь:</span> <span id="modalUser" class="fw-medium text-white"></span>
+                        </div>
+                        <div class="col-12 col-md-4">
+                            <span class="text-muted">Дата:</span> <span id="modalDate" class="fw-medium text-white"></span>
+                        </div>
+                        <div class="col-12 col-md-4">
+                            <span class="text-muted">Стиль / Артист:</span> <span id="modalMetaStyle" class="fw-medium text-white"></span>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <div class="d-flex justify-content-between align-items-center mb-1">
+                            <label class="form-label text-muted small fw-bold mb-0">ПОЛНЫЙ ТЕКСТ ПРОМТА:</label>
+                            <button class="btn btn-sm btn-outline-info py-0 px-2" id="copyPromptBtn" style="font-size: 0.75rem;">
+                                <i class="bi bi-clipboard me-1"></i>Копировать промт
+                            </button>
+                        </div>
+                        <textarea id="modalPromptText" class="form-control text-light font-monospace" rows="5" readonly style="background-color: #0b0f19; border-color: #374151; font-size: 0.85rem; line-height: 1.5;"></textarea>
+                    </div>
+
+                    <div class="mb-2" id="modalLyricsContainer" style="display: none;">
+                        <div class="d-flex justify-content-between align-items-center mb-1">
+                            <label class="form-label text-muted small fw-bold mb-0">ТЕКСТ ПЕСНИ (LYRICS):</label>
+                            <button class="btn btn-sm btn-outline-info py-0 px-2" id="copyLyricsBtn" style="font-size: 0.75rem;">
+                                <i class="bi bi-clipboard me-1"></i>Копировать текст
+                            </button>
+                        </div>
+                        <textarea id="modalLyricsText" class="form-control text-light font-monospace" rows="7" readonly style="background-color: #0b0f19; border-color: #374151; font-size: 0.85rem; line-height: 1.5;"></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer border-top border-secondary">
+                    <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Закрыть</button>
+                </div>
+            </div>
+        </div>
+    </div>
     """
 
     extra_scripts = """
@@ -708,6 +911,61 @@ def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> 
                 order: [[0, 'desc']],
                 pageLength: 25,
                 language: ruDataTablesLang
+            });
+
+            // Modal opener handler
+            $(document).on('click', '.view-prompt-btn', function() {
+                const btn = $(this);
+                const gid = btn.data('gid');
+                const artist = btn.data('artist') || '';
+                const genres = btn.data('genres') || '';
+                const date = btn.data('date') || '';
+                const user = btn.data('user') || '';
+
+                const tr = btn.closest('tr');
+                const promptText = tr.find('.full-prompt-data').text();
+                const lyricsText = tr.find('.full-lyrics-data').text();
+
+                $('#modalGid').text('#' + gid);
+                $('#modalDate').text(date);
+                $('#modalUser').html(user);
+
+                let styleStr = '';
+                if (artist) styleStr += artist + ' ';
+                if (genres) styleStr += '(' + genres + ')';
+                $('#modalMetaStyle').text(styleStr || '—');
+
+                $('#modalPromptText').val(promptText);
+
+                if (lyricsText && lyricsText.trim() !== '') {
+                    $('#modalLyricsContainer').show();
+                    $('#modalLyricsText').val(lyricsText);
+                } else {
+                    $('#modalLyricsContainer').hide();
+                }
+            });
+
+            // Copy buttons
+            $('#copyPromptBtn').on('click', function() {
+                const text = $('#modalPromptText').val();
+                navigator.clipboard.writeText(text).then(function() {
+                    const btn = $('#copyPromptBtn');
+                    btn.html('<i class="bi bi-check2 me-1"></i>Скопировано!');
+                    setTimeout(function() {
+                        btn.html('<i class="bi bi-clipboard me-1"></i>Копировать промт');
+                    }, 2000);
+                });
+            });
+
+            $('#copyLyricsBtn').on('click', function() {
+                const text = $('#modalLyricsText').val();
+                navigator.clipboard.writeText(text).then(function() {
+                    const btn = $('#copyLyricsBtn');
+                    btn.html('<i class="bi bi-check2 me-1"></i>Скопировано!');
+                    setTimeout(function() {
+                        btn.html('<i class="bi bi-clipboard me-1"></i>Копировать текст');
+                    }, 2000);
+                });
             });
         });
     </script>
@@ -954,18 +1212,29 @@ async def handle_payments(request: web.Request) -> web.Response:
 
 
 async def handle_payments_csv(request: web.Request) -> web.Response:
-    """GET /payments/export.csv - exports all payments as CSV file with UTF-8 BOM."""
+    """GET /payments/export.csv - exports payments as CSV file with UTF-8 BOM."""
     user_id = verify_session(request)
     if not user_id:
         raise web.HTTPFound(location="/login")
 
+    filter_mode = request.query.get("filter", "all")
     payments = await db.get_all_payments_detailed(limit=5000)
+
+    if filter_mode == "succeeded":
+        payments = [p for p in payments if p.get("status") == "succeeded"]
+    elif filter_mode == "hide-canceled":
+        payments = [p for p in payments if p.get("status") != "canceled"]
+    elif filter_mode == "canceled":
+        payments = [p for p in payments if p.get("status") == "canceled"]
+    elif filter_mode == "pending":
+        payments = [p for p in payments if p.get("status") == "pending"]
 
     output = io.StringIO()
     writer = csv.writer(output, delimiter=";")
     writer.writerow([
         "ID",
-        "YooKassa ID",
+        "Шлюз",
+        "ID транзакции",
         "Telegram User ID",
         "Имя / Username",
         "Сумма (₽)",
@@ -983,8 +1252,16 @@ async def handle_payments_csv(request: web.Request) -> web.Response:
             "canceled": "Отменён",
         }
         st_ru = status_map.get(p.get("status"), p.get("status"))
+        provider = p.get("provider") or "yookassa"
+        prov_ru = {
+            "telegram_stars": "Telegram Stars",
+            "cryptobot": "CryptoBot",
+            "yookassa": "ЮKassa",
+        }.get(provider, provider)
+
         writer.writerow([
             p.get("id"),
+            prov_ru,
             p.get("payment_id") or "",
             p.get("user_id"),
             uname,

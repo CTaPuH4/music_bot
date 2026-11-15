@@ -461,3 +461,64 @@ def get_payment_keyboard(payment_url: str, payment_id: str) -> InlineKeyboardMar
             ],
         ]
     )
+
+
+def get_payment_methods_keyboard(
+    pack_id: str,
+    rub_price: float,
+    stars_price: int,
+    crypto_price: float,
+) -> InlineKeyboardMarkup:
+    """Builds payment methods selection keyboard: Bank Cards / SBP, Telegram Stars, Crypto."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"🇷🇺 Карта РФ / СБП ({int(rub_price)} ₽)",
+                    callback_data=f"pay_method:yookassa:{pack_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"⭐ Telegram Stars ({stars_price} ⭐)",
+                    callback_data=f"pay_method:stars:{pack_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"💎 Криптовалюта ({crypto_price} USDT)",
+                    callback_data=f"pay_method:crypto:{pack_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(text="◀️ Назад к тарифам", callback_data="menu_topup"),
+            ],
+        ]
+    )
+
+
+def get_crypto_payment_keyboard(
+    pay_url: str,
+    payment_id: str,
+    invoice_id: int | str,
+) -> InlineKeyboardMarkup:
+    """Builds inline keyboard for CryptoBot invoice with pay URL, check and cancel buttons."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="💎 Оплатить в @CryptoBot", url=pay_url),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔄 Проверить оплату",
+                    callback_data=f"check_crypto:{payment_id}:{invoice_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="❌ Отменить",
+                    callback_data=f"cancel_crypto:{payment_id}:{invoice_id}",
+                ),
+            ],
+        ]
+    )
