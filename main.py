@@ -14,7 +14,8 @@ from handlers.admin import admin_router
 from handlers.common import common_router
 from handlers.generation import generation_router
 from handlers.payments import payments_router
-from services.yookassa_webhook import start_webhook_server, background_payments_poller
+from services.web_server import start_web_server
+from services.yookassa_webhook import background_payments_poller
 
 logging.basicConfig(
     level=logging.INFO,
@@ -83,10 +84,10 @@ async def main() -> None:
     except Exception as e:
         logger.warning("Could not set bot commands: %s", e)
 
-    # Start YooKassa Webhook server and background poller safety net
-    webhook_runner = None
-    if settings.webhook_enabled:
-        webhook_runner = await start_webhook_server(bot)
+    # Start unified Web server (YooKassa Webhook + Admin Web Dashboard) and background poller
+    web_runner = None
+    if settings.webhook_enabled or settings.dashboard_enabled:
+        web_runner = await start_web_server(bot)
 
     poller_task = asyncio.create_task(background_payments_poller(bot))
 
@@ -97,8 +98,8 @@ async def main() -> None:
     finally:
         if poller_task:
             poller_task.cancel()
-        if webhook_runner:
-            await webhook_runner.cleanup()
+        if web_runner:
+            await web_runner.cleanup()
         await bot.session.close()
         logger.info("Bot stopped.")
 

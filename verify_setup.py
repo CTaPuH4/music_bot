@@ -25,6 +25,8 @@ try:
     import handlers.payments
     import handlers.admin
     import services.admin_alerts
+    import services.web_dashboard
+    import services.web_server
     import main
     print("[OK] All imports passed successfully.")
 except Exception as e:
@@ -629,6 +631,168 @@ async def test_custom_tags():
     print("[OK] Custom tags parser, transliteration, whitelist and display tests passed.")
 
 
+async def test_web_dashboard():
+    from database.db import Database
+    from services.web_dashboard import (
+        sign_session,
+        verify_session,
+        COOKIE_NAME,
+        render_dashboard_page,
+        render_payments_page,
+        render_generations_page,
+        render_users_page,
+        render_login_page,
+        render_error_page,
+        register_dashboard_routes,
+    )
+    from aiohttp import web
+
+    test_db_file = "test_dashboard_db.db"
+    if os.path.exists(test_db_file):
+        os.remove(test_db_file)
+
+    test_db = Database(db_path=test_db_file)
+    await test_db.init()
+
+    admin_id = config.settings.admin_ids_list[0] if config.settings.admin_ids_list else 999999
+    if not config.settings.admin_ids_list:
+        config.settings.admin_ids = str(admin_id)
+
+    # 1. Test Magic Tokens
+    token = await test_db.create_magic_token(user_id=admin_id, ttl_seconds=600)
+    assert token and len(token) > 20
+
+    # First consumption succeeds
+    consumed_uid = await test_db.validate_and_consume_magic_token(token)
+    assert consumed_uid == admin_id
+
+    # Second consumption fails (single-use)
+    consumed_again = await test_db.validate_and_consume_magic_token(token)
+    assert consumed_again is None
+
+    # Expired token test (ttl=0)
+    expired_token = await test_db.create_magic_token(user_id=admin_id, ttl_seconds=-10)
+    consumed_expired = await test_db.validate_and_consume_magic_token(expired_token)
+    assert consumed_expired is None
+    print("[OK] Web Dashboard: Magic tokens generation, single-use, and expiration tests passed.")
+
+    # 2. Test Session Cookie signing & verification
+    cookie_str = sign_session(admin_id)
+    assert cookie_str.startswith(f"{admin_id}:")
+
+    # Mock aiohttp request with valid cookie
+    class DummyRequest:
+        def __init__(self, cookies=None):
+            self.cookies = cookies or {}
+
+    req_valid = DummyRequest({COOKIE_NAME: cookie_str})
+    verified_uid = verify_session(req_valid)
+    assert verified_uid == admin_id
+
+    # Tampered signature fails
+    req_tampered = DummyRequest({COOKIE_NAME: cookie_str + "tampered"})
+    assert verify_session(req_tampered) is None
+
+    # Non-admin user fails
+    non_admin_cookie = sign_session(111111111)
+    req_non_admin = DummyRequest({COOKIE_NAME: non_admin_cookie})
+    assert verify_session(req_non_admin) is None
+    print("[OK] Web Dashboard: Session cookie cryptographic signing and verification tests passed.")
+
+    # 3. Test Database Stats and Detailed Queries
+    # Seed some dummy data
+    await test_db.get_or_create_user(admin_id, "admin_user", "Admin")
+    await test_db.get_or_create_user(55555, "client1", "Client One")
+    await test_db.create_payment_record("pay_succ_1", 55555, 490.0, 20)
+    await test_db.mark_payment_succeeded("pay_succ_1")
+    await test_db.create_payment_record("pay_pend_2", 55555, 190.0, 5)
+    await test_db.record_generation(
+        user_id=55555,
+        task_id="task_web_1",
+        prompt="cosmic synthwave track",
+        artist="Scriptonite",
+        genres="Synthwave, Electronic",
+        instrumental=False,
+    )
+    await test_db.update_generation_status("task_web_1", "SUCCESS", audio_url="https://audio.example.com/track1.mp3")
+
+    stats = await test_db.get_detailed_dashboard_stats()
+    assert stats["revenue_total"] == 490.0
+    assert stats["buyers_total"] == 1
+    assert stats["generations_total"] == 1
+    assert stats["generations_success"] == 1
+    assert stats["avg_check"] == 490.0
+
+    chart = await test_db.get_daily_chart_data(days=14)
+    assert len(chart["labels"]) == 14
+    assert len(chart["dates"]) == 14
+    assert len(chart["revenue"]) == 14
+    assert len(chart["generations"]) == 14
+    assert sum(chart["revenue"]) == 490.0
+    assert sum(chart["generations"]) == 1
+
+    payments = await test_db.get_all_payments_detailed(limit=10)
+    assert len(payments) == 2
+    assert payments[0]["user_id"] == 55555
+
+    generations = await test_db.get_all_generations_detailed(limit=10)
+    assert len(generations) == 1
+    assert generations[0]["audio_url"] == "https://audio.example.com/track1.mp3"
+
+    users = await test_db.get_all_users_detailed(limit=10)
+    assert len(users) >= 2
+    user_55555 = next(u for u in users if u["user_id"] == 55555)
+    assert user_55555["total_spent"] == 490.0
+    assert user_55555["successful_orders"] == 1
+    assert user_55555["total_generations"] == 1
+    print("[OK] Web Dashboard: Database analytics, charts, payments, and users queries passed.")
+
+    # 4. Test HTML Template Rendering
+    html_dash = render_dashboard_page(stats, chart, admin_id)
+    assert "Сводная аналитика" in html_dash
+    assert "revenueChart" in html_dash
+
+    html_pay = render_payments_page(payments, admin_id)
+    assert "История платежей" in html_pay
+    assert "pay_succ_1" in html_pay
+    assert "Оплачен" in html_pay
+
+    html_gens = render_generations_page(generations, admin_id)
+    assert "История генераций" in html_gens
+    assert "https://audio.example.com/track1.mp3" in html_gens
+    assert "<audio" in html_gens
+
+    html_users = render_users_page(users, admin_id)
+    assert "Пользователи бота" in html_users
+    assert "55555" in html_users
+
+    html_login = render_login_page("TrivelaBot")
+    assert "Вход в панель администратора" in html_login
+
+    html_err = render_error_page("Ошибка", "Текст ошибки")
+    assert "Текст ошибки" in html_err
+    print("[OK] Web Dashboard: HTML templates rendering passed.")
+
+    # 5. Test Route Registration on aiohttp App
+    app = web.Application()
+    register_dashboard_routes(app)
+    route_paths = [r.resource.canonical for r in app.router.routes()]
+    assert "/" in route_paths
+    assert "/dashboard" in route_paths
+    assert "/payments" in route_paths
+    assert "/payments/export.csv" in route_paths
+    assert "/generations" in route_paths
+    assert "/users" in route_paths
+    assert "/auth" in route_paths
+    assert "/login" in route_paths
+    assert "/logout" in route_paths
+    print("[OK] Web Dashboard: aiohttp route registration passed.")
+
+    # Clean up test DB
+    if os.path.exists(test_db_file):
+        os.remove(test_db_file)
+
+
 async def run_all():
     await test_db()
     await test_promo_codes()
@@ -638,6 +802,7 @@ async def run_all():
     await test_keyboards_and_catalogs()
     await test_admin_module()
     await test_custom_tags()
+    await test_web_dashboard()
     print("\nALL LOCAL COMPONENT CHECKS PASSED!")
 
 

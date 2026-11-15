@@ -50,6 +50,13 @@ class Settings(BaseSettings):
     # Background payments poller (checks pending payments without domain or open ports)
     background_poller_interval_sec: int = 15
 
+    # Web dashboard settings
+    dashboard_enabled: bool = True
+    dashboard_host: str = "0.0.0.0"
+    dashboard_port: int = 8080
+    dashboard_base_url: str = "https://trivela-music.strangled.net"
+    dashboard_session_secret: str = "trivela-music-secure-dashboard-secret-2026"
+
     # Treblo API URL
     treblo_base_url: str = "https://api.treblo.com/v1"
     polling_interval_sec: float = 4.0

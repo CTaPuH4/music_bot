@@ -184,33 +184,6 @@ async def background_payments_poller(bot: Bot) -> None:
 
 
 async def start_webhook_server(bot: Bot) -> Optional[web.AppRunner]:
-    """Starts the aiohttp HTTP server to receive YooKassa webhook notifications."""
-    if not settings.webhook_enabled:
-        logger.info("YooKassa Webhook server is disabled in config.")
-        return None
-
-    app = web.Application()
-    app["bot"] = bot
-    app.router.add_post(settings.webhook_path, yookassa_webhook_handler)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, settings.webhook_host, settings.webhook_port)
-
-    try:
-        await site.start()
-        logger.info(
-            "YooKassa Webhook server listening at http://%s:%s%s",
-            settings.webhook_host,
-            settings.webhook_port,
-            settings.webhook_path,
-        )
-        return runner
-    except Exception as exc:
-        logger.warning(
-            "Could not start webhook server on %s:%s: %s (Background poller will still process payments!)",
-            settings.webhook_host,
-            settings.webhook_port,
-            exc,
-        )
-        return None
+    """Starts the unified aiohttp HTTP server (Webhook + Web Dashboard). Kept for backward compatibility."""
+    from services.web_server import start_web_server
+    return await start_web_server(bot)

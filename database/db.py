@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import secrets
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List, Tuple
 
@@ -380,6 +381,17 @@ class Database:
                     payment_id TEXT,
                     FOREIGN KEY (promo_code_id) REFERENCES promo_codes (id),
                     FOREIGN KEY (user_id) REFERENCES users (user_id)
+                )
+            """)
+
+            # Create admin_magic_tokens table for web dashboard authentication
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS admin_magic_tokens (
+                    token TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    used INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
 
@@ -1444,6 +1456,237 @@ class Database:
                 (user_id,),
             )
             await db.commit()
+
+    # ---------------------------------------------------------
+    # WEB DASHBOARD & MAGIC LINK AUTHENTICATION
+    # ---------------------------------------------------------
+    async def create_magic_token(self, user_id: int, ttl_seconds: int = 600) -> str:
+        """Generate and store a single-use magic login token for admin dashboard."""
+        token = secrets.token_urlsafe(32)
+        now = get_msk_now()
+        expires_at = (now + timedelta(seconds=ttl_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT INTO admin_magic_tokens (token, user_id, expires_at, used) VALUES (?, ?, ?, 0)",
+                (token, user_id, expires_at),
+            )
+            await db.commit()
+        return token
+
+    async def validate_and_consume_magic_token(self, token: str) -> Optional[int]:
+        """Validate magic token and consume it. Returns user_id if valid, else None."""
+        if not token:
+            return None
+        now_str = get_msk_now().strftime("%Y-%m-%d %H:%M:%S")
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT user_id, expires_at, used FROM admin_magic_tokens WHERE token = ?",
+                (token,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return None
+                user_id, expires_at, used = row[0], row[1], row[2]
+                if used != 0 or expires_at < now_str:
+                    return None
+
+            await db.execute(
+                "UPDATE admin_magic_tokens SET used = 1 WHERE token = ?",
+                (token,),
+            )
+            await db.commit()
+            return user_id
+
+    async def get_detailed_dashboard_stats(self) -> Dict[str, Any]:
+        """Returns aggregated KPI metrics for the web dashboard."""
+        now = get_msk_now()
+        today_date = now.strftime("%Y-%m-%d")
+        dt_7d = (now - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+        dt_30d = (now - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+
+        async with aiosqlite.connect(self.db_path) as db:
+            # Users
+            async with db.execute("SELECT COUNT(*) FROM users") as c:
+                users_total = (await c.fetchone())[0]
+            async with db.execute("SELECT COUNT(*) FROM users WHERE date(created_at) = ?", (today_date,)) as c:
+                users_today = (await c.fetchone())[0]
+
+            # Payments
+            async with db.execute("SELECT COUNT(*), coalesce(SUM(amount), 0) FROM payments WHERE status = 'succeeded'") as c:
+                row = await c.fetchone()
+                pay_total_count, rev_total = row[0], float(row[1])
+
+            async with db.execute(
+                "SELECT COUNT(*), coalesce(SUM(amount), 0) FROM payments WHERE status = 'succeeded' AND date(created_at) = ?",
+                (today_date,),
+            ) as c:
+                row = await c.fetchone()
+                pay_today_count, rev_today = row[0], float(row[1])
+
+            async with db.execute(
+                "SELECT COUNT(*), coalesce(SUM(amount), 0) FROM payments WHERE status = 'succeeded' AND created_at >= ?",
+                (dt_7d,),
+            ) as c:
+                row = await c.fetchone()
+                pay_7d_count, rev_7d = row[0], float(row[1])
+
+            async with db.execute(
+                "SELECT COUNT(*), coalesce(SUM(amount), 0) FROM payments WHERE status = 'succeeded' AND created_at >= ?",
+                (dt_30d,),
+            ) as c:
+                row = await c.fetchone()
+                pay_30d_count, rev_30d = row[0], float(row[1])
+
+            # Generations
+            async with db.execute("SELECT COUNT(*) FROM generations") as c:
+                gens_total = (await c.fetchone())[0]
+            async with db.execute("SELECT COUNT(*) FROM generations WHERE status = 'SUCCESS'") as c:
+                gens_success = (await c.fetchone())[0]
+            async with db.execute("SELECT COUNT(*) FROM generations WHERE status = 'FAILURE'") as c:
+                gens_failure = (await c.fetchone())[0]
+            async with db.execute("SELECT COUNT(*) FROM generations WHERE date(created_at) = ?", (today_date,)) as c:
+                gens_today = (await c.fetchone())[0]
+
+            # Buyers (unique paying users)
+            async with db.execute("SELECT COUNT(DISTINCT user_id) FROM payments WHERE status = 'succeeded'") as c:
+                buyers_total = (await c.fetchone())[0]
+
+            avg_check = round(rev_total / pay_total_count, 1) if pay_total_count > 0 else 0.0
+            conversion_rate = round((buyers_total / users_total * 100), 1) if users_total > 0 else 0.0
+
+            return {
+                "users_total": users_total,
+                "users_today": users_today,
+                "buyers_total": buyers_total,
+                "conversion_rate": conversion_rate,
+                "revenue_total": rev_total,
+                "revenue_today": rev_today,
+                "revenue_7d": rev_7d,
+                "revenue_30d": rev_30d,
+                "payments_count_total": pay_total_count,
+                "payments_count_today": pay_today_count,
+                "payments_count_7d": pay_7d_count,
+                "payments_count_30d": pay_30d_count,
+                "avg_check": avg_check,
+                "generations_total": gens_total,
+                "generations_success": gens_success,
+                "generations_failure": gens_failure,
+                "generations_today": gens_today,
+            }
+
+    async def get_daily_chart_data(self, days: int = 14) -> Dict[str, Any]:
+        """Returns daily series for Chart.js (revenue and track generations)."""
+        now = get_msk_now()
+        dates_list = [(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days - 1, -1, -1)]
+        labels = [(now - timedelta(days=i)).strftime("%d.%m") for i in range(days - 1, -1, -1)]
+        dt_start = (now - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+
+        revenue_map = {d: 0.0 for d in dates_list}
+        gens_map = {d: 0 for d in dates_list}
+
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                """
+                SELECT date(created_at) as dt, coalesce(SUM(amount), 0)
+                FROM payments
+                WHERE status = 'succeeded' AND created_at >= ?
+                GROUP BY dt
+                """,
+                (dt_start,),
+            ) as cursor:
+                async for dt, rev in cursor:
+                    if dt in revenue_map:
+                        revenue_map[dt] = float(rev)
+
+            async with db.execute(
+                """
+                SELECT date(created_at) as dt, COUNT(*)
+                FROM generations
+                WHERE created_at >= ?
+                GROUP BY dt
+                """,
+                (dt_start,),
+            ) as cursor:
+                async for dt, cnt in cursor:
+                    if dt in gens_map:
+                        gens_map[dt] = int(cnt)
+
+        return {
+            "labels": labels,
+            "dates": dates_list,
+            "revenue": [revenue_map[d] for d in dates_list],
+            "generations": [gens_map[d] for d in dates_list],
+        }
+
+    async def get_all_payments_detailed(self, limit: int = 1000) -> List[Dict[str, Any]]:
+        """Fetch all payments joined with user and promo info for web table."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT
+                    p.id, p.payment_id, p.user_id, p.amount, p.credits, p.status, p.created_at, p.updated_at,
+                    u.username, u.first_name,
+                    pr.code as promo_code
+                FROM payments p
+                LEFT JOIN users u ON p.user_id = u.user_id
+                LEFT JOIN user_promo_activations pa ON p.promo_activation_id = pa.id
+                LEFT JOIN promo_codes pr ON pa.promo_code_id = pr.id
+                ORDER BY p.id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+
+    async def get_all_generations_detailed(self, limit: int = 1000) -> List[Dict[str, Any]]:
+        """Fetch generations history for web table with preview audio url."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT
+                    g.id, g.task_id, g.user_id, g.prompt, g.artist, g.genres,
+                    g.instrumental, g.lyrics, g.status, g.audio_url, g.duration, g.created_at,
+                    u.username, u.first_name
+                FROM generations g
+                LEFT JOIN users u ON g.user_id = u.user_id
+                ORDER BY g.id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+
+    async def get_all_users_detailed(self, limit: int = 1000) -> List[Dict[str, Any]]:
+        """Fetch users table with balances and total spends for web dashboard."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT
+                    u.user_id, u.username, u.first_name, u.paid_balance, u.gift_balance,
+                    u.referral_balance, u.referred_by, u.created_at,
+                    coalesce(SUM(case when p.status = 'succeeded' then p.amount else 0 end), 0) as total_spent,
+                    coalesce(SUM(case when p.status = 'succeeded' then 1 else 0 end), 0) as successful_orders,
+                    (SELECT count(*) FROM generations g WHERE g.user_id = u.user_id) as total_generations
+                FROM users u
+                LEFT JOIN payments p ON u.user_id = p.user_id
+                GROUP BY u.user_id
+                ORDER BY total_spent DESC, u.created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                res = []
+                for r in rows:
+                    d = dict(r)
+                    d["total_balance"] = (d.get("paid_balance") or 0) + (d.get("gift_balance") or 0)
+                    res.append(d)
+                return res
 
 
 db = Database()

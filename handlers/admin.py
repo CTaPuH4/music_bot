@@ -95,6 +95,49 @@ async def close_admin_panel(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 # ---------------------------------------------------------
+# ADMIN WEB DASHBOARD
+# ---------------------------------------------------------
+@admin_router.callback_query(F.data == "admin_web_dashboard")
+async def show_admin_web_dashboard(callback: CallbackQuery) -> None:
+    user_id = callback.from_user.id
+    if not is_admin(user_id):
+        await callback.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+
+    # Generate single-use magic token (valid for 10 minutes)
+    token = await db.create_magic_token(user_id, ttl_seconds=600)
+    base_url = settings.dashboard_base_url.rstrip("/")
+    magic_url = f"{base_url}/auth?token={token}"
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🚀 Войти в веб-панель", url=magic_url),
+            ],
+            [
+                InlineKeyboardButton(text="◀️ Назад в админку", callback_data="admin_menu"),
+            ],
+        ]
+    )
+
+    text = (
+        "🌐 <b>Веб-панель администратора</b>\n\n"
+        "Для безопасного входа сгенерирована одноразовая ссылка:\n"
+        f"⏳ Срок действия: <b>10 минут</b> (работает только 1 раз).\n"
+        "После входа браузерная сессия действует <b>14 дней</b>.\n\n"
+        "<b>В веб-интерфейсе доступно:</b>\n"
+        "• 📊 Графики выручки и генераций по дням\n"
+        "• 💳 Таблица всех оплат с поиском, фильтрами и выгрузкой в CSV\n"
+        "• 🎵 Список генераций со встроенным аудиоплеером треков\n"
+        "• 👥 Статистика по клиентам, заказам и балансам\n\n"
+        f"🔗 Ссылка для входа:\n<code>{magic_url}</code>"
+    )
+
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+
+# ---------------------------------------------------------
 # FEATURE 0: CHECK TREBLO BALANCE
 # ---------------------------------------------------------
 @admin_router.callback_query(F.data == "admin_treblo_balance")

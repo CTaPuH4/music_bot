@@ -7,6 +7,9 @@ def get_admin_main_keyboard(sub_enabled: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
+                InlineKeyboardButton(text="🌐 Веб-панель (статистика)", callback_data="admin_web_dashboard"),
+            ],
+            [
                 InlineKeyboardButton(text="📢 Создать рассылку", callback_data="admin_broadcast"),
             ],
             [
