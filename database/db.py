@@ -821,6 +821,18 @@ class Database:
                 rows = await cursor.fetchall()
                 return [r[0] for r in rows]
 
+    async def get_buyers_user_ids(self) -> list[int]:
+        """Fetch Telegram IDs of users who made at least one successful purchase."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT DISTINCT p.user_id
+                FROM payments p
+                JOIN users u ON p.user_id = u.user_id
+                WHERE p.status = 'succeeded'
+            """) as cursor:
+                rows = await cursor.fetchall()
+                return [r[0] for r in rows]
+
     async def get_system_stats(self) -> Dict[str, Any]:
         """Calculates system-wide metrics for the admin panel."""
         async with aiosqlite.connect(self.db_path) as db:

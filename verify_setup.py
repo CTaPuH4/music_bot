@@ -152,9 +152,14 @@ async def test_db():
     print("[OK] DB: Anti-spam pending count and stale cleanup passed.")
 
     # Admin DB operations: tariffs, user_ids, stats, add_gift_balance
+    await test_db_instance.get_or_create_user(99999)
     all_users = await test_db_instance.get_all_user_ids()
+    buyers = await test_db_instance.get_buyers_user_ids()
     assert 12345 in all_users
-    print("[OK] DB: get_all_user_ids check passed.")
+    assert 99999 in all_users
+    assert 12345 in buyers
+    assert 99999 not in buyers
+    print("[OK] DB: get_all_user_ids and get_buyers_user_ids check passed.")
 
     tariffs = await test_db_instance.get_all_tariffs()
     assert len(tariffs) >= 4
@@ -534,6 +539,7 @@ async def test_admin_module():
     from keyboards.admin import (
         get_admin_main_keyboard,
         get_admin_sub_keyboard,
+        get_admin_broadcast_target_keyboard,
         get_admin_broadcast_confirm_keyboard,
         get_admin_tariffs_keyboard,
         get_admin_cancel_keyboard,
@@ -547,7 +553,8 @@ async def test_admin_module():
     assert get_admin_main_keyboard(sub_enabled=False) is not None
     assert get_admin_sub_keyboard(sub_enabled=True) is not None
     assert get_subscription_gate_keyboard("https://t.me/test") is not None
-    assert get_admin_broadcast_confirm_keyboard() is not None
+    assert get_admin_broadcast_target_keyboard(all_count=10, buyers_count=2) is not None
+    assert get_admin_broadcast_confirm_keyboard(recipients_count=2) is not None
     dummy_tariffs = [
         {"id": "pack_5", "title": "5 треков", "price": 10.0, "credits": 5, "emoji": "🌱"}
     ]
@@ -571,6 +578,57 @@ async def test_admin_module():
     print("[OK] Admin keyboards, authorization and router priority check passed.")
 
 
+async def test_custom_tags():
+    from services.tags_data import ALLOWED_TAGS
+    from services.tags import resolve_user_tags
+    from handlers.generation import format_genres_display
+
+    assert len(ALLOWED_TAGS) >= 3000
+    assert "pop" in ALLOWED_TAGS
+    assert "rock" in ALLOWED_TAGS
+    assert "synthwave" in ALLOWED_TAGS
+    assert "lo-fi" in ALLOWED_TAGS
+    assert "deep house" in ALLOWED_TAGS
+    assert "electronic metal" in ALLOWED_TAGS
+
+    # Test Russian synonyms
+    v1, inv1 = resolve_user_tags("рок, поп, дип хаус")
+    assert v1 == ["rock", "pop", "deep house"]
+    assert inv1 == []
+
+    # Test English / hyphens
+    v2, inv2 = resolve_user_tags("synthwave, rock, hip-hop, lo-fi")
+    assert v2 == ["synthwave", "rock", "hip hop", "lo-fi"]
+    assert inv2 == []
+
+    # Test normalizations and decades
+    v3, inv3 = resolve_user_tags("lofi, deep house, 80s")
+    assert v3 == ["lo-fi", "deep house", "1980s"]
+    assert inv3 == []
+
+    # Test Cyrillic transliteration and fused compound words
+    v4, inv4 = resolve_user_tags("чиллстеп, пост-рок, хэвиметалл, ньювейв")
+    assert v4 == ["chillstep", "post-rock", "heavy metal", "new wave"]
+    assert inv4 == []
+
+    v4_sp, inv4_sp = resolve_user_tags("хэви металл, хэвиметал")
+    assert v4_sp == ["heavy metal"]
+    assert inv4_sp == []
+
+    # Test invalid tag detection
+    v5, inv5 = resolve_user_tags("синтвейв, джаз, несуществующийтег123")
+    assert v5 == ["synthwave", "jazz"]
+    assert inv5 == ["несуществующийтег123"]
+
+    # Test formatting with emojis
+    display_str = format_genres_display(["pop", "synthwave", "customstyle"])
+    assert "Поп" in display_str
+    assert "Синтвейв" in display_str
+    assert "Customstyle" in display_str
+
+    print("[OK] Custom tags parser, transliteration, whitelist and display tests passed.")
+
+
 async def run_all():
     await test_db()
     await test_promo_codes()
@@ -579,6 +637,7 @@ async def run_all():
     await test_referral_tiers()
     await test_keyboards_and_catalogs()
     await test_admin_module()
+    await test_custom_tags()
     print("\nALL LOCAL COMPONENT CHECKS PASSED!")
 
 

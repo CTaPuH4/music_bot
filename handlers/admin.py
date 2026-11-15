@@ -14,6 +14,7 @@ from keyboards.inline import TARIFF_PACKAGES, get_tariff_by_id, format_per_track
 from keyboards.admin import (
     get_admin_main_keyboard,
     get_admin_sub_keyboard,
+    get_admin_broadcast_target_keyboard,
     get_admin_broadcast_confirm_keyboard,
     get_admin_tariffs_keyboard,
     get_admin_cancel_keyboard,
@@ -334,16 +335,96 @@ async def start_broadcast(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_admin(callback.from_user.id):
         return
 
-    await state.set_state(AdminStates.waiting_for_broadcast_text)
+    await state.clear()
+    all_users = await db.get_all_user_ids()
+    buyers = await db.get_buyers_user_ids()
+
     text = (
-        "📢 <b>Создание рассылки пользователям</b>\n\n"
-        "Отправьте текст сообщения для рассылки всем пользователям бота.\n"
-        "<i>Поддерживается стандартное HTML форматирование (жирный, курсив, ссылки).</i>"
+        "📢 <b>Рассылка сообщений</b>\n\n"
+        "Выберите целевую аудиторию для рассылки:\n\n"
+        f"👥 <b>Всем пользователям</b> — {len(all_users)} чел.\n"
+        f"💳 <b>Только покупателям</b> — {len(buyers)} чел. <i>(совершили хотя бы 1 покупку)</i>\n\n"
+        "<i>Нажмите на нужную кнопку ниже:</i>"
     )
 
     await callback.message.edit_text(
         text,
-        reply_markup=get_admin_cancel_keyboard("admin_menu"),
+        reply_markup=get_admin_broadcast_target_keyboard(
+            all_count=len(all_users),
+            buyers_count=len(buyers),
+        ),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@admin_router.callback_query(F.data.startswith("admin_broadcast_target:"))
+async def process_broadcast_target(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+
+    target = callback.data.split(":")[1]
+    if target == "buyers":
+        recipients = await db.get_buyers_user_ids()
+        target_label = "Только покупатели"
+        target_emoji = "💳"
+    else:
+        target = "all"
+        recipients = await db.get_all_user_ids()
+        target_label = "Все пользователи"
+        target_emoji = "👥"
+
+    count = len(recipients)
+    if count == 0:
+        await callback.answer(
+            f"⚠️ В выбранной аудитории ({target_label}) пока 0 пользователей!",
+            show_alert=True,
+        )
+        return
+
+    await state.update_data(
+        broadcast_target=target,
+        broadcast_target_label=target_label,
+        broadcast_target_emoji=target_emoji,
+        recipients_count=count,
+    )
+    await state.set_state(AdminStates.waiting_for_broadcast_text)
+
+    text = (
+        f"📢 <b>Рассылка: {target_emoji} {target_label}</b>\n\n"
+        f"👥 Получателей: <b>{count} чел.</b>\n\n"
+        "Отправьте текст сообщения для рассылки.\n"
+        "<i>Поддерживается стандартное HTML-форматирование (жирный, курсив, ссылки, промокоды).</i>"
+    )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_admin_cancel_keyboard("admin_broadcast"),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@admin_router.callback_query(AdminStates.confirm_broadcast, F.data == "admin_broadcast_retry")
+async def retry_broadcast_text(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+
+    data = await state.get_data()
+    target_label = data.get("broadcast_target_label", "Все пользователи")
+    target_emoji = data.get("broadcast_target_emoji", "👥")
+    count = data.get("recipients_count", 0)
+
+    await state.set_state(AdminStates.waiting_for_broadcast_text)
+    text = (
+        f"📢 <b>Рассылка: {target_emoji} {target_label}</b>\n\n"
+        f"👥 Получателей: <b>{count} чел.</b>\n\n"
+        "Отправьте новый текст сообщения для рассылки.\n"
+        "<i>Поддерживается HTML-форматирование.</i>"
+    )
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_admin_cancel_keyboard("admin_broadcast"),
         parse_mode="HTML",
     )
     await callback.answer()
@@ -356,12 +437,21 @@ async def process_broadcast_text(message: Message, state: FSMContext) -> None:
 
     text = message.html_text or message.text
     if not text or len(text.strip()) < 2:
-        await message.answer("Текст сообщения слишком короткий. Попробуйте еще раз.")
+        await message.answer("⚠️ Текст сообщения слишком короткий. Попробуйте еще раз.")
         return
 
-    await state.update_data(broadcast_text=text)
-    user_ids = await db.get_all_user_ids()
-    await state.update_data(recipients_count=len(user_ids))
+    data = await state.get_data()
+    target = data.get("broadcast_target", "all")
+    target_label = data.get("broadcast_target_label", "Все пользователи")
+    target_emoji = data.get("broadcast_target_emoji", "👥")
+
+    if target == "buyers":
+        recipients = await db.get_buyers_user_ids()
+    else:
+        recipients = await db.get_all_user_ids()
+
+    count = len(recipients)
+    await state.update_data(broadcast_text=text, recipients_count=count)
     await state.set_state(AdminStates.confirm_broadcast)
 
     preview_text = (
@@ -369,13 +459,14 @@ async def process_broadcast_text(message: Message, state: FSMContext) -> None:
         "────────────────────\n"
         f"{text}\n"
         "────────────────────\n"
-        f"👥 <b>Всего получателей:</b> {len(user_ids)} пользователей.\n\n"
+        f"🎯 <b>Аудитория:</b> {target_emoji} {target_label}\n"
+        f"👥 <b>Всего получателей:</b> {count} чел.\n\n"
         "Нажмите кнопку ниже для подтверждения и запуска рассылки:"
     )
 
     await message.answer(
         preview_text,
-        reply_markup=get_admin_broadcast_confirm_keyboard(),
+        reply_markup=get_admin_broadcast_confirm_keyboard(count),
         parse_mode="HTML",
     )
 
@@ -387,17 +478,30 @@ async def execute_broadcast(callback: CallbackQuery, state: FSMContext) -> None:
 
     data = await state.get_data()
     text = data.get("broadcast_text")
+    target = data.get("broadcast_target", "all")
+    target_label = data.get("broadcast_target_label", "Все пользователи")
+    target_emoji = data.get("broadcast_target_emoji", "👥")
     await state.clear()
 
     if not text:
-        await callback.message.edit_text("Текст рассылки утерян. Попробуйте снова.")
+        await callback.message.edit_text("⚠️ Текст рассылки утерян. Попробуйте снова.")
         return
 
-    user_ids = await db.get_all_user_ids()
+    if target == "buyers":
+        user_ids = await db.get_buyers_user_ids()
+    else:
+        user_ids = await db.get_all_user_ids()
+
     total = len(user_ids)
+    if total == 0:
+        await callback.message.edit_text(
+            f"⚠️ В аудитории «{target_label}» нет пользователей для отправки.",
+            reply_markup=get_admin_cancel_keyboard("admin_menu"),
+        )
+        return
 
     status_msg = await callback.message.edit_text(
-        f"🚀 <b>Запуск рассылки...</b>\n\nОтправлено 0 из {total}...",
+        f"🚀 <b>Запуск рассылки ({target_emoji} {target_label})...</b>\n\nОтправлено 0 из {total}...",
         parse_mode="HTML",
     )
 
@@ -420,7 +524,7 @@ async def execute_broadcast(callback: CallbackQuery, state: FSMContext) -> None:
         if idx % 25 == 0 or idx == total:
             try:
                 await status_msg.edit_text(
-                    f"🚀 <b>Рассылка в процессе:</b> {idx}/{total}\n\n"
+                    f"🚀 <b>Рассылка в процессе ({target_emoji} {target_label}):</b> {idx}/{total}\n\n"
                     f"✅ Успешно: {success}\n"
                     f"❌ Не доставлено: {failed}",
                     parse_mode="HTML",
@@ -430,6 +534,7 @@ async def execute_broadcast(callback: CallbackQuery, state: FSMContext) -> None:
 
     report = (
         "🎉 <b>Рассылка успешно завершена!</b>\n\n"
+        f"🎯 Аудитория: <b>{target_emoji} {target_label}</b>\n"
         f"👥 Всего адресатов: <b>{total}</b>\n"
         f"✅ Доставлено: <b>{success}</b>\n"
         f"❌ Ошибок (заблокировали бота): <b>{failed}</b>"

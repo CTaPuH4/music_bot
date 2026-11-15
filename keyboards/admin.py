@@ -52,11 +52,41 @@ def get_admin_sub_keyboard(sub_enabled: bool = False) -> InlineKeyboardMarkup:
     )
 
 
-def get_admin_broadcast_confirm_keyboard() -> InlineKeyboardMarkup:
+def get_admin_broadcast_target_keyboard(all_count: int, buyers_count: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="🚀 Подтвердить и отправить всем", callback_data="admin_broadcast_send"),
+                InlineKeyboardButton(
+                    text=f"👥 Всем пользователям ({all_count})",
+                    callback_data="admin_broadcast_target:all",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"💳 Только покупателям ({buyers_count})",
+                    callback_data="admin_broadcast_target:buyers",
+                ),
+            ],
+            [
+                InlineKeyboardButton(text="« Назад в админку", callback_data="admin_menu"),
+            ],
+        ]
+    )
+
+
+def get_admin_broadcast_confirm_keyboard(recipients_count: Optional[int] = None) -> InlineKeyboardMarkup:
+    btn_text = (
+        f"🚀 Подтвердить и отправить ({recipients_count})"
+        if recipients_count is not None
+        else "🚀 Подтвердить и отправить всем"
+    )
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text=btn_text, callback_data="admin_broadcast_send"),
+            ],
+            [
+                InlineKeyboardButton(text="✏️ Изменить текст", callback_data="admin_broadcast_retry"),
             ],
             [
                 InlineKeyboardButton(text="❌ Отменить рассылку", callback_data="admin_menu"),

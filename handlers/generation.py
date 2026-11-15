@@ -37,6 +37,7 @@ from services.treblo import (
     TrebloTimeoutError,
 )
 from states.generation import GenerationStates
+from services.tags import resolve_user_tags
 
 logger = logging.getLogger(__name__)
 generation_router = Router()
@@ -49,6 +50,8 @@ def format_genres_display(genre_ids: List[str]) -> str:
         g = get_genre_by_id(gid)
         if g:
             names.append(f"{g['emoji']} {g['name']}")
+        else:
+            names.append(f"🎵 {gid.capitalize()}")
     return ", ".join(names) if names else "Не выбраны"
 
 
@@ -292,8 +295,9 @@ async def process_artist_text_input(message: Message, state: FSMContext) -> None
 
         text = (
             "🎧 <b>Шаг 2 — выбор жанров</b>\n\n"
-            "Выбери минимум 2 жанра для создания уникального звучания.\n"
-            "<i>Нажимай на кнопки, чтобы отметить нужные жанры:</i>"
+            "Выбери жанры кнопками ниже или <b>напиши свои теги через запятую</b>\n"
+            "<i>(например: <code>рок, поп</code> или <code>synthwave, deep house, 80s</code>)</i>.\n\n"
+            "<i>Нажимай на кнопки или отправь теги сообщением:</i>"
         )
         await message.answer(
             text,
@@ -353,8 +357,9 @@ async def process_artist_selection(callback: CallbackQuery, state: FSMContext) -
 
     text = (
         "🎧 <b>Шаг 2 — выбор жанров</b>\n\n"
-        "Выбери минимум 2 жанра для создания уникального звучания.\n"
-        "<i>Нажимай на кнопки, чтобы отметить нужные жанры:</i>"
+        "Выбери жанры кнопками ниже или <b>напиши свои теги через запятую</b>\n"
+        "<i>(например: <code>рок, поп</code> или <code>synthwave, deep house, 80s</code>)</i>.\n\n"
+        "<i>Нажимай на кнопки или отправь теги сообщением:</i>"
     )
 
     await callback.message.answer(
@@ -391,9 +396,9 @@ async def process_genre_toggle(callback: CallbackQuery, state: FSMContext) -> No
 
     text = (
         "🎧 <b>Шаг 2 — выбор жанров</b>\n\n"
-        "Выбери минимум 2 жанра для создания уникального звучания.\n\n"
+        "Выбери жанры кнопками ниже или <b>напиши свои теги через запятую</b>.\n\n"
         f"{selected_status}\n\n"
-        "<i>Нажимай на кнопки, чтобы отметить или снять жанры:</i>"
+        "<i>Нажимай на кнопки или отправь теги сообщением:</i>"
     )
 
     await callback.message.edit_text(
@@ -442,6 +447,61 @@ async def process_genres_confirm(callback: CallbackQuery, state: FSMContext) -> 
     )
 
     await callback.message.answer(
+        text,
+        reply_markup=get_mode_selection_keyboard(),
+        parse_mode="HTML",
+    )
+
+
+@generation_router.message(
+    GenerationStates.waiting_for_genres, F.text, ~F.text.startswith("/")
+)
+async def process_custom_genres_message(message: Message, state: FSMContext) -> None:
+    raw_text = message.text.strip()
+    valid_tags, invalid_tags = resolve_user_tags(raw_text)
+
+    if invalid_tags:
+        invalid_str = ", ".join(f"«{t}»" for t in invalid_tags)
+        await message.answer(
+            f"⚠️ Не удалось распознать следующие теги: <b>{invalid_str}</b>\n\n"
+            "Пожалуйста, проверьте написание и введите теги через запятую заново "
+            "(например: <code>рок, поп</code> или <code>synthwave, deep house</code>), "
+            "либо выберите жанры кнопками выше.",
+            parse_mode="HTML",
+        )
+        return
+
+    if len(valid_tags) < 2:
+        count = len(valid_tags)
+        recognized_note = (
+            f" (распознано: <b>{', '.join(valid_tags)}</b>)"
+            if valid_tags
+            else ""
+        )
+        await message.answer(
+            f"⚠️ Пожалуйста, укажите <b>минимум 2 жанра</b> через запятую{recognized_note}!\n\n"
+            "Например: <code>хэви метал, синтвейв</code> или <code>рок, поп</code>.\n"
+            "Вы также можете выбрать жанры кнопками выше.",
+            parse_mode="HTML",
+        )
+        return
+
+    # Update state with the verified tags
+    await state.update_data(selected_genres=valid_tags)
+
+    # Short confirmation message of user's choice
+    genres_display = format_genres_display(valid_tags)
+    await message.answer(f"🎧 Жанры: <b>{genres_display}</b>", parse_mode="HTML")
+
+    # Move to Step 3 (Format / Mode) as a NEW message without accumulated summaries
+    await state.set_state(GenerationStates.waiting_for_mode)
+
+    text = (
+        "🎤 <b>Шаг 3 — текст песни (Lyrics)</b>\n\n"
+        "Выбери режим:"
+    )
+
+    await message.answer(
         text,
         reply_markup=get_mode_selection_keyboard(),
         parse_mode="HTML",
@@ -720,6 +780,13 @@ async def execute_generation(
             g = get_genre_by_id(gid)
             if g:
                 genre_objs.append(g)
+            else:
+                genre_objs.append({
+                    "id": gid,
+                    "name": gid.capitalize(),
+                    "tag": gid,
+                    "emoji": "🎵",
+                })
 
     genre_names_str = (
         ", ".join([f"{g['emoji']} {g['name']}" for g in genre_objs])

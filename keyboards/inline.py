@@ -98,7 +98,7 @@ def get_artist_by_id(artist_id: str) -> Optional[Dict[str, str]]:
 
 def get_genre_by_id(genre_id: str) -> Optional[Dict[str, str]]:
     for genre in GENRES_CATALOG:
-        if genre["id"] == genre_id:
+        if genre["id"] == genre_id or genre["tag"] == genre_id:
             return genre
     return None
 
