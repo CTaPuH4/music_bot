@@ -1116,17 +1116,77 @@ async def execute_generation(
         )
 
     except TrebloTimeoutError as e:
-        logger.error("Generation timeout: %s", e)
-        err_msg, raw_str = _extract_error_details(e)
-        # Refund credit
-        if deducted_from:
-            await db.refund_generation_credit(user_id, balance_type=deducted_from, cost=cost)
-        if task_id:
-            await db.update_generation_status(task_id, "FAILURE", error_message=err_msg, raw_response=raw_str)
+        logger.warning("Generation timeout for task %s (user %s): %s", task_id, user_id, e)
+        # Check Treblo status before doing anything
+        final_status = "PENDING"
+        if task_id and not task_id.startswith("fail_"):
+            try:
+                final_status = await treblo_client.get_status(task_id)
+            except Exception as st_err:
+                logger.warning("Failed to check status for timed out task %s: %s", task_id, st_err)
+                final_status = "PENDING"
+
+        if final_status == "SUCCESS":
+            # Task completed right as timeout fired
+            logger.info("Task %s completed right at timeout! Enqueuing for delivery.", task_id)
+            try:
+                gen_res = await treblo_client.get_generation(task_id)
+                a_url = (
+                    gen_res.get("audio_url")
+                    or (gen_res.get("song_paths") and gen_res["song_paths"][0])
+                    or (gen_res.get("audio_paths") and gen_res["audio_paths"][0])
+                )
+                i_url = (
+                    gen_res.get("image_url")
+                    or gen_res.get("image_path")
+                    or gen_res.get("cover_url")
+                    or (gen_res.get("image_paths") and gen_res["image_paths"][0])
+                )
+                dur = gen_res.get("duration")
+                if a_url:
+                    await db.update_generation_status(
+                        task_id=task_id,
+                        status="SUCCESS",
+                        audio_url=a_url,
+                        duration=float(dur) if dur else None,
+                        image_url=i_url,
+                    )
+                    await db.mark_generation_pending_delivery(task_id)
+                    await status_msg.edit_text(
+                        "✨ <b>Ваш трек успешно создан!</b>\n\n"
+                        "⏳ Из-за задержки сети отправка файла поставлена в очередь доставки. Бот пришлёт MP3 прямо в этот чат в ближайшие минуты!\n\n"
+                        "<i>Баланс списан корректно, трек готов и обязательно придёт сюда.</i>",
+                        reply_markup=get_main_menu_keyboard(),
+                        parse_mode="HTML",
+                    )
+                    return
+            except Exception as fetch_err:
+                logger.warning("Could not immediately fetch completed task %s at timeout: %s", task_id, fetch_err)
+
+        if final_status in ("FAILURE", "FAILED", "ERROR"):
+            logger.info("Task %s failed on Treblo side.", task_id)
+            err_msg, raw_str = _extract_error_details(e)
+            if deducted_from:
+                await db.refund_generation_credit(user_id, balance_type=deducted_from, cost=cost)
+            if task_id:
+                await db.update_generation_status(task_id, "FAILURE", error_message=err_msg, raw_response=raw_str)
+            await status_msg.edit_text(
+                "😔 <b>Не удалось создать трек</b>\n\n"
+                "Сервер нейросети сообщил об ошибке при генерации.\n"
+                "Потраченная попытка возвращена на ваш баланс. Попробуйте ещё раз с другими настройками.",
+                reply_markup=get_main_menu_keyboard(),
+                parse_mode="HTML",
+            )
+            return
+
+        # If still PENDING / GENERATING / PROCESSING / UNKNOWN:
+        # Treblo has accepted the task and charged tokens! NEVER refund!
+        logger.info("Task %s is in progress on Treblo (%s). Kept as PENDING without refund.", task_id, final_status)
         await status_msg.edit_text(
-            "⏱ <b>Время ожидания трека истекло.</b>\n"
-            "Сервер перегружен или обрабатывает задачу слишком долго.\n"
-            "Ваш баланс не списан, попробуйте повторить позже.",
+            "⏳ <b>Сервера нейросети сейчас сильно загружены</b>\n\n"
+            "Ваш трек уже находится в обработке на сервере. Из-за высокой нагрузки создание занимает чуть дольше обычного (более 3 минут).\n\n"
+            "Не переживайте: генерация не пропала! Как только нейросеть завершит трек, бот автоматически пришлёт MP3 прямо в этот чат.\n\n"
+            "<i>Попытка зафиксирована, создавать трек заново не нужно.</i>",
             reply_markup=get_main_menu_keyboard(),
             parse_mode="HTML",
         )
@@ -1134,7 +1194,68 @@ async def execute_generation(
     except Exception as e:
         logger.exception("Unexpected generation error: %s", e)
         err_msg, raw_str = _extract_error_details(e)
-        # Refund credit
+
+        # If task was already created in Treblo, we must NOT immediately refund unless Treblo actually failed!
+        if task_id and not task_id.startswith("fail_"):
+            cur_status = "PENDING"
+            try:
+                cur_status = await treblo_client.get_status(task_id)
+            except Exception:
+                cur_status = "PENDING"
+
+            if cur_status == "SUCCESS":
+                try:
+                    gen_res = await treblo_client.get_generation(task_id)
+                    a_url = (
+                        gen_res.get("audio_url")
+                        or (gen_res.get("song_paths") and gen_res["song_paths"][0])
+                        or (gen_res.get("audio_paths") and gen_res["audio_paths"][0])
+                    )
+                    i_url = (
+                        gen_res.get("image_url")
+                        or gen_res.get("image_path")
+                        or gen_res.get("cover_url")
+                        or (gen_res.get("image_paths") and gen_res["image_paths"][0])
+                    )
+                    dur = gen_res.get("duration")
+                    if a_url:
+                        await db.update_generation_status(
+                            task_id=task_id,
+                            status="SUCCESS",
+                            audio_url=a_url,
+                            duration=float(dur) if dur else None,
+                            image_url=i_url,
+                        )
+                        await db.mark_generation_pending_delivery(task_id)
+                        await status_msg.edit_text(
+                            "✨ <b>Ваш трек успешно создан!</b>\n\n"
+                            "⏳ Из-за задержки сети отправка файла поставлена в очередь доставки. Бот пришлёт MP3 прямо в этот чат в ближайшие минуты!\n\n"
+                            "<i>Баланс списан корректно, трек готов и обязательно придёт сюда.</i>",
+                            reply_markup=get_main_menu_keyboard(),
+                            parse_mode="HTML",
+                        )
+                        return
+                except Exception as fetch_err:
+                    logger.warning("Could not fetch completed task %s during exception handler: %s", task_id, fetch_err)
+
+            if cur_status in ("GENERATING", "PROCESSING", "PENDING"):
+                # Treblo is still working on it: keep as PENDING, background worker will deliver it
+                logger.info("Task %s is in progress on Treblo (%s) despite exception. Kept in DB without refund.", task_id, cur_status)
+                try:
+                    await status_msg.edit_text(
+                        "⏳ <b>Сервера генерации сейчас перегружены</b>\n\n"
+                        "Создание вашего трека продолжается на сервере нейросети. Бот автоматически доставит готовый аудиофайл прямо в этот чат, как только он будет готов.\n\n"
+                        "<i>Баланс учтён, создавать заново не нужно.</i>",
+                        reply_markup=get_main_menu_keyboard(),
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+                return
+
+        # If we reach here, either task_id was never created on Treblo (create_generation failed),
+        # or Treblo explicitly confirmed FAILURE / FAILED / ERROR.
+        # Now it is safe to refund!
         if deducted_from:
             await db.refund_generation_credit(user_id, balance_type=deducted_from, cost=cost)
         if task_id:

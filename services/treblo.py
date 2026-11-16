@@ -221,7 +221,20 @@ class TrebloClient:
                         logger.warning("Error in status_callback: %s", e)
 
             if status == "SUCCESS":
-                return await self.get_generation(task_id)
+                for fetch_attempt in range(5):
+                    try:
+                        return await self.get_generation(task_id)
+                    except Exception as fetch_exc:
+                        logger.warning(
+                            "Attempt %s/5 to fetch completed generation metadata for %s failed: %s",
+                            fetch_attempt + 1,
+                            task_id,
+                            fetch_exc,
+                        )
+                        if fetch_attempt < 4:
+                            await asyncio.sleep(2.0 * (fetch_attempt + 1))
+                        else:
+                            raise fetch_exc
             elif status in ("FAILURE", "FAILED", "ERROR"):
                 error_detail = "Генерация музыки завершилась ошибкой со стороны нейросети."
                 raw_resp = None

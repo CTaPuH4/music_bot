@@ -230,6 +230,117 @@ async def process_pending_audio_deliveries(bot: Bot) -> None:
         logger.debug("Error in process_pending_audio_deliveries: %s", exc)
 
 
+async def process_pending_treblo_generations(bot: Bot) -> None:
+    """
+    Checks for in-flight Treblo generation tasks that timed out in the user interaction flow
+    or were interrupted by bot restarts / network drops.
+    - If Treblo reports SUCCESS: retrieves audio, updates DB, queues for delivery.
+    - If Treblo reports FAILURE: updates DB, refunds generation credit to user, sends notification.
+    - If still GENERATING / PROCESSING: leaves in queue.
+    - If stale (> 2 hours): marks failed, refunds user credit, sends notification.
+    """
+    try:
+        from keyboards.inline import get_main_menu_keyboard
+
+        pending_tasks = await db.get_pending_treblo_generations(max_age_minutes=120, min_age_seconds=60)
+        if pending_tasks:
+            logger.info("Found %s pending Treblo generation tasks. Checking status...", len(pending_tasks))
+
+            for task in pending_tasks:
+                task_id = task["task_id"]
+                user_id = task["user_id"]
+
+                try:
+                    status = await treblo_client.get_status(task_id)
+                except Exception as st_err:
+                    logger.debug("Error checking status for Treblo task %s: %s", task_id, st_err)
+                    continue
+
+                if status == "SUCCESS":
+                    logger.info("Pending Treblo task %s completed! Fetching audio details...", task_id)
+                    try:
+                        gen_res = await treblo_client.get_generation(task_id)
+                        audio_url = (
+                            gen_res.get("audio_url")
+                            or (gen_res.get("song_paths") and gen_res["song_paths"][0])
+                            or (gen_res.get("audio_paths") and gen_res["audio_paths"][0])
+                        )
+                        image_url = (
+                            gen_res.get("image_url")
+                            or gen_res.get("image_path")
+                            or gen_res.get("cover_url")
+                            or (gen_res.get("image_paths") and gen_res["image_paths"][0])
+                        )
+                        duration = gen_res.get("duration")
+
+                        if audio_url:
+                            await db.update_generation_status(
+                                task_id=task_id,
+                                status="SUCCESS",
+                                audio_url=audio_url,
+                                duration=float(duration) if duration else None,
+                                image_url=image_url,
+                            )
+                            await db.mark_generation_pending_delivery(task_id)
+                            logger.info("Pending Treblo task %s updated to SUCCESS and marked for delivery.", task_id)
+                    except Exception as fetch_err:
+                        logger.warning("Error fetching completed Treblo generation %s: %s", task_id, fetch_err)
+
+                elif status in ("FAILURE", "FAILED", "ERROR"):
+                    logger.warning("Pending Treblo task %s failed on AI server.", task_id)
+                    await db.update_generation_status(
+                        task_id=task_id,
+                        status="FAILURE",
+                        error_message="Генерация музыки завершилась ошибкой на сервере нейросети.",
+                    )
+                    await db.refund_generation_credit(user_id)
+                    try:
+                        await bot.send_message(
+                            chat_id=user_id,
+                            text=(
+                                "😔 <b>Не удалось создать трек</b>\n\n"
+                                "Нейросеть не смогла завершить генерацию трека.\n"
+                                "Потраченная попытка возвращена на ваш баланс. Попробуйте ещё раз с другими настройками или стилем."
+                            ),
+                            reply_markup=get_main_menu_keyboard(),
+                            parse_mode="HTML",
+                        )
+                    except Exception as notify_err:
+                        logger.debug("Failed to notify user %s of failed task %s: %s", user_id, task_id, notify_err)
+
+                await asyncio.sleep(0.5)
+
+        # Handle abandoned stale tasks older than 2 hours
+        stale_tasks = await db.get_stale_treblo_generations(max_age_minutes=120)
+        for task in stale_tasks:
+            task_id = task["task_id"]
+            user_id = task["user_id"]
+            logger.warning("Treblo task %s exceeded 2-hour timeout. Marking failed and refunding.", task_id)
+            await db.update_generation_status(
+                task_id=task_id,
+                status="FAILURE",
+                error_message="Время ожидания генерации превысило 2 часа.",
+            )
+            await db.refund_generation_credit(user_id)
+            try:
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=(
+                        "⏱ <b>Время ожидания генерации трека истекло</b>\n\n"
+                        "Сервер не успел завершить обработку трека за отведённое время.\n"
+                        "Потраченная попытка возвращена на ваш баланс."
+                    ),
+                    reply_markup=get_main_menu_keyboard(),
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+
+    except Exception as exc:
+        logger.debug("Error in process_pending_treblo_generations: %s", exc)
+
+
 async def background_payments_poller(bot: Bot) -> None:
     """
     Safety net background worker:
@@ -299,6 +410,12 @@ async def background_payments_poller(bot: Bot) -> None:
                 await check_expiring_promo_reminders(bot)
             except Exception as e:
                 logger.debug("Expiring promo reminders check: %s", e)
+
+            # Monitor and recover in-flight Treblo generation tasks
+            try:
+                await process_pending_treblo_generations(bot)
+            except Exception as e:
+                logger.debug("Pending Treblo generations background worker error: %s", e)
 
             # Process delayed audio deliveries for tracks queued due to Telegram lag
             try:

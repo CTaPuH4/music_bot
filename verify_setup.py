@@ -128,6 +128,19 @@ async def test_db():
     assert len(pending_gens_failed) == 0
     print("[OK] DB: Delayed audio delivery queue & status transitions check passed.")
 
+    # Treblo In-Flight Task Recovery check
+    await test_db_instance.record_generation(
+        user_id=12345,
+        task_id="treblo-pending-1",
+        prompt="test pending prompt",
+        status="PENDING",
+    )
+    pending_treblo = await test_db_instance.get_pending_treblo_generations(max_age_minutes=120, min_age_seconds=0)
+    assert any(g["task_id"] == "treblo-pending-1" for g in pending_treblo)
+    stale_treblo = await test_db_instance.get_stale_treblo_generations(max_age_minutes=120)
+    assert not any(g["task_id"] == "treblo-pending-1" for g in stale_treblo)
+    print("[OK] DB: Treblo in-flight pending & stale generations query check passed.")
+
     # Payments check
     await test_db_instance.create_payment_record(
         payment_id="pay-12345",

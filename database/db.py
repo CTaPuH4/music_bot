@@ -807,6 +807,52 @@ class Database:
                 rows = await cursor.fetchall()
                 return [dict(r) for r in rows]
 
+    async def get_pending_treblo_generations(
+        self, max_age_minutes: int = 120, min_age_seconds: int = 60
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieves in-flight Treblo tasks that are still PENDING in generations table.
+        min_age_seconds: only tasks pending for at least 60 seconds (avoids clashing with active generation).
+        max_age_minutes: ignores abandoned tasks older than 2 hours.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                f"""
+                SELECT id, user_id, task_id, prompt, artist, genres,
+                       instrumental, lyrics, status, created_at
+                FROM generations
+                WHERE status = 'PENDING'
+                  AND task_id NOT LIKE 'fail_%'
+                  AND created_at <= datetime('now', '+3 hours', '-{min_age_seconds} seconds')
+                  AND created_at >= datetime('now', '+3 hours', '-{max_age_minutes} minutes')
+                ORDER BY id ASC
+                LIMIT 10
+                """
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+
+    async def get_stale_treblo_generations(
+        self, max_age_minutes: int = 120
+    ) -> List[Dict[str, Any]]:
+        """Retrieves abandoned PENDING Treblo tasks older than max_age_minutes for safe cleanup & refund."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                f"""
+                SELECT id, user_id, task_id, created_at
+                FROM generations
+                WHERE status = 'PENDING'
+                  AND task_id NOT LIKE 'fail_%'
+                  AND created_at < datetime('now', '+3 hours', '-{max_age_minutes} minutes')
+                ORDER BY id ASC
+                LIMIT 10
+                """
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+
     async def get_user_stats(self, user_id: int) -> Dict[str, Any]:
         """Get statistics: total generations count, success count, referral count."""
         async with aiosqlite.connect(self.db_path) as db:
