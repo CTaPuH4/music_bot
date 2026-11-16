@@ -1571,9 +1571,14 @@ def render_users_page(users: List[Dict[str, Any]], user_id: int) -> str:
         gens_badge = f'<span class="badge bg-info-subtle text-info border border-info-subtle">{gens}</span>' if gens > 0 else '<span class="text-muted">0</span>'
 
         rows_html += f"""
-        <tr>
+        <tr class="user-row" role="button" data-user-id="{uid}" style="cursor: pointer;" title="Нажмите, чтобы открыть выжимку действий">
             <td class="text-muted" data-order="{uid}"><code>{uid}</code></td>
-            <td>{user_info}</td>
+            <td>
+                <span class="user-link-wrap">{user_info}</span>
+                <button type="button" class="btn btn-sm btn-outline-info py-0 px-2 ms-2 view-user-btn" data-user-id="{uid}" title="Выжимка действий">
+                    <i class="bi bi-clock-history me-1"></i>История
+                </button>
+            </td>
             <td data-order="{paid_bal}"><strong class="text-white">{paid_bal}</strong> <span class="text-muted">плат.</span></td>
             <td data-order="{gift_bal}"><span class="text-warning">{gift_bal}</span> <span class="text-muted">под.</span></td>
             <td data-order="{ref_bal}"><span class="text-info">{ref_bal}</span> <span class="text-muted">реф.</span></td>
@@ -1588,7 +1593,7 @@ def render_users_page(users: List[Dict[str, Any]], user_id: int) -> str:
     <div class="d-flex justify-content-between align-items-center mb-4">
         <div>
             <h2 class="h3 fw-bold mb-1">Пользователи бота</h2>
-            <p class="text-muted mb-0">Балансы, суммарные траты и активность пользователей</p>
+            <p class="text-muted mb-0">Балансы, суммарные траты и активность пользователей (нажмите на строку для выжимки действий)</p>
         </div>
     </div>
 
@@ -1614,6 +1619,87 @@ def render_users_page(users: List[Dict[str, Any]], user_id: int) -> str:
             </table>
         </div>
     </div>
+
+    <!-- MODAL FOR USER ACTIVITY TIMELINE -->
+    <div class="modal fade" id="userActivityModal" tabindex="-1" aria-labelledby="userActivityModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
+            <div class="modal-content card-custom border-secondary" style="background-color: #111827;">
+                <div class="modal-header border-bottom border-secondary pb-3">
+                    <div>
+                        <h5 class="modal-title fw-bold text-white mb-1" id="userActivityModalLabel">
+                            <i class="bi bi-person-badge me-2 text-info"></i><span id="uModalTitle">Пользователь</span>
+                        </h5>
+                        <div class="small text-muted" id="uModalSubtitle">Загрузка информации...</div>
+                    </div>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body p-4">
+                    <!-- Loading Spinner -->
+                    <div id="uModalSpinner" class="text-center py-5">
+                        <div class="spinner-border text-info" role="status">
+                            <span class="visually-hidden">Загрузка...</span>
+                        </div>
+                        <p class="text-muted mt-2 small">Загружаем выжимку действий пользователя...</p>
+                    </div>
+
+                    <!-- Content Container -->
+                    <div id="uModalContent" style="display: none;">
+                        <!-- Stat Badges Cards -->
+                        <div class="row g-2 mb-4">
+                            <div class="col-6 col-md-3">
+                                <div class="p-2 rounded bg-dark border border-secondary text-center">
+                                    <div class="small text-muted">Баланс</div>
+                                    <div class="fw-bold text-white fs-6" id="uModalBalance">—</div>
+                                </div>
+                            </div>
+                            <div class="col-6 col-md-3">
+                                <div class="p-2 rounded bg-dark border border-secondary text-center">
+                                    <div class="small text-muted">Всего оплачено</div>
+                                    <div class="fw-bold text-success fs-6" id="uModalSpent">—</div>
+                                </div>
+                            </div>
+                            <div class="col-6 col-md-3">
+                                <div class="p-2 rounded bg-dark border border-secondary text-center">
+                                    <div class="small text-muted">Генераций</div>
+                                    <div class="fw-bold text-info fs-6" id="uModalGens">—</div>
+                                </div>
+                            </div>
+                            <div class="col-6 col-md-3">
+                                <div class="p-2 rounded bg-dark border border-secondary text-center">
+                                    <div class="small text-muted">Промо / Реф.</div>
+                                    <div class="fw-bold text-warning fs-6" id="uModalPromosRef">—</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Timeline Header -->
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <h6 class="fw-bold text-light mb-0">
+                                <i class="bi bi-clock-history me-1 text-info"></i> Хронология действий
+                            </h6>
+                            <span class="badge bg-secondary" id="uModalEventsCount">0 событий</span>
+                        </div>
+
+                        <!-- Timeline Items -->
+                        <div class="timeline position-relative pb-2" id="uModalTimeline" style="border-left: 2px solid #374151; margin-left: 1rem; padding-left: 1.5rem;">
+                            <!-- Dynamically injected -->
+                        </div>
+                    </div>
+
+                    <!-- Error Container -->
+                    <div id="uModalError" class="alert alert-danger mb-0" style="display: none;">
+                        Не удалось загрузить данные пользователя.
+                    </div>
+                </div>
+                <div class="modal-footer border-top border-secondary">
+                    <a href="#" id="uModalTgLink" target="_blank" class="btn btn-outline-info btn-sm me-auto" style="display: none;">
+                        <i class="bi bi-telegram me-1"></i> Открыть диалог в Telegram
+                    </a>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Закрыть</button>
+                </div>
+            </div>
+        </div>
+    </div>
     """
 
     extra_scripts = """
@@ -1633,6 +1719,141 @@ def render_users_page(users: List[Dict[str, Any]], user_id: int) -> str:
                 pageLength: 25,
                 language: ruDataTablesLang
             });
+        });
+
+        function openUserActivityModal(userId) {
+            const modalEl = document.getElementById('userActivityModal');
+            const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+            modal.show();
+
+            $('#uModalSpinner').show();
+            $('#uModalContent').hide();
+            $('#uModalError').hide();
+            $('#uModalTgLink').hide();
+            $('#uModalTitle').text('Загрузка...');
+            $('#uModalSubtitle').text('ID: ' + userId);
+
+            fetch('/api/user/' + userId + '/activity')
+                .then(res => {
+                    if (!res.ok) throw new Error('Ошибка ' + res.status);
+                    return res.json();
+                })
+                .then(data => {
+                    $('#uModalSpinner').hide();
+                    $('#uModalContent').show();
+
+                    const u = data.user || {};
+                    const stats = data.stats || {};
+                    const timeline = data.timeline || [];
+
+                    // Title & Subtitle
+                    const displayName = u.first_name || (u.username ? '@' + u.username : 'ID ' + u.user_id);
+                    $('#uModalTitle').html(displayName + ' <span class="text-muted fw-normal font-monospace fs-6">#' + u.user_id + '</span>');
+
+                    let sub = 'ID: ' + u.user_id;
+                    if (u.username) {
+                        sub += ' • @' + u.username;
+                        $('#uModalTgLink').attr('href', 'https://t.me/' + u.username).show();
+                    } else {
+                        $('#uModalTgLink').attr('href', 'tg://user?id=' + u.user_id).show();
+                    }
+                    if (data.referrer) {
+                        const refName = data.referrer.username ? '@' + data.referrer.username : 'ID ' + data.referrer.user_id;
+                        sub += ' • Приглашён: ' + refName;
+                    }
+                    if (u.created_at) {
+                        sub += ' • Регистрация: ' + u.created_at;
+                    }
+                    $('#uModalSubtitle').text(sub);
+
+                    // Stat Cards
+                    const totalBal = (u.paid_balance || 0) + (u.gift_balance || 0);
+                    $('#uModalBalance').html(totalBal + ' <span class="small text-muted fw-normal">(' + (u.paid_balance || 0) + 'п/' + (u.gift_balance || 0) + 'б)</span>');
+                    $('#uModalSpent').text((stats.total_spent || 0).toLocaleString('ru-RU') + ' ₽ (' + (stats.successful_payments || 0) + ' пок.)');
+                    $('#uModalGens').html((stats.total_generations || 0) + ' <span class="small text-muted fw-normal">(✓' + (stats.success_generations || 0) + ' / ✗' + (stats.failed_generations || 0) + ')</span>');
+                    $('#uModalPromosRef').text((stats.promos_count || 0) + ' пром. / ' + (stats.referrals_count || 0) + ' реф.');
+
+                    $('#uModalEventsCount').text(timeline.length + ' событий');
+
+                    // Render Timeline
+                    const $tl = $('#uModalTimeline');
+                    $tl.empty();
+
+                    if (timeline.length === 0) {
+                        $tl.html('<div class="text-muted small py-3">Действий пока не зафиксировано.</div>');
+                        return;
+                    }
+
+                    timeline.forEach(item => {
+                        const iconClass = item.icon || 'bi-circle';
+                        const badgeColor = item.badge_color || 'primary';
+                        const badgeText = item.badge || '';
+                        const title = item.title || '';
+                        const ts = item.timestamp || '';
+                        const details = (item.details || '').replace(/\\n/g, '<br>');
+
+                        let audioHtml = '';
+                        if (item.audio_url) {
+                            audioHtml = `
+                                <div class="mt-2">
+                                    <audio controls preload="none" class="w-100" style="height: 32px;">
+                                        <source src="${item.audio_url}" type="audio/mpeg">
+                                    </audio>
+                                </div>
+                            `;
+                        }
+
+                        const borderColors = {
+                            success: '#10b981',
+                            danger: '#ef4444',
+                            warning: '#f59e0b',
+                            info: '#06b6d4',
+                            primary: '#6366f1',
+                            secondary: '#6b7280'
+                        };
+                        const dotBorder = borderColors[badgeColor] || '#6366f1';
+
+                        const itemHtml = `
+                            <div class="timeline-item position-relative mb-4">
+                                <div class="timeline-badge position-absolute" style="left: -2.25rem; top: 0; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background-color: #111827; border: 2px solid ${dotBorder};">
+                                    <i class="bi ${iconClass} text-${badgeColor}" style="font-size: 0.85rem;"></i>
+                                </div>
+                                <div class="d-flex align-items-center justify-content-between mb-1">
+                                    <span class="fw-bold text-white small">${title}</span>
+                                    <span class="badge bg-${badgeColor}-subtle text-${badgeColor} border border-${badgeColor}-subtle">${badgeText}</span>
+                                </div>
+                                <div class="text-light-50 small mb-1" style="font-size: 0.82rem; line-height: 1.45;">${details}</div>
+                                ${audioHtml}
+                                <div class="text-secondary font-monospace" style="font-size: 0.72rem;">
+                                    <i class="bi bi-clock me-1"></i>${ts}
+                                </div>
+                            </div>
+                        `;
+                        $tl.append(itemHtml);
+                    });
+                })
+                .catch(err => {
+                    $('#uModalSpinner').hide();
+                    $('#uModalError').text('Ошибка при загрузке: ' + err.message).show();
+                });
+        }
+
+        $(document).on('click', '.user-row', function(e) {
+            if ($(e.target).closest('a').length > 0 || $(e.target).closest('button').length > 0) {
+                return; // Let direct links and buttons work without conflict
+            }
+            const userId = $(this).data('user-id');
+            if (userId) {
+                openUserActivityModal(userId);
+            }
+        });
+
+        $(document).on('click', '.view-user-btn', function(e) {
+            e.stopPropagation();
+            const userId = $(this).data('user-id');
+            if (userId) {
+                openUserActivityModal(userId);
+            }
         });
     </script>
     """
@@ -1887,6 +2108,24 @@ async def handle_users(request: web.Request) -> web.Response:
     return web.Response(text=html_content, content_type="text/html")
 
 
+async def handle_user_activity_api(request: web.Request) -> web.Response:
+    """GET /api/user/{user_id}/activity - returns full JSON activity timeline & stats for user."""
+    user_id = verify_session(request)
+    if not user_id:
+        return web.json_response({"error": "Unauthorized"}, status=401)
+
+    target_uid_str = request.match_info.get("user_id")
+    if not target_uid_str or not target_uid_str.isdigit():
+        return web.json_response({"error": "Invalid user ID"}, status=400)
+
+    target_uid = int(target_uid_str)
+    activity_data = await db.get_user_activity(target_uid)
+    if not activity_data:
+        return web.json_response({"error": "User not found"}, status=404)
+
+    return web.json_response(activity_data)
+
+
 def register_dashboard_routes(app: web.Application) -> None:
     """Registers all dashboard routes to the aiohttp application."""
     app.router.add_get("/", handle_dashboard)
@@ -1895,6 +2134,7 @@ def register_dashboard_routes(app: web.Application) -> None:
     app.router.add_get("/payments/export.csv", handle_payments_csv)
     app.router.add_get("/generations", handle_generations)
     app.router.add_get("/users", handle_users)
+    app.router.add_get("/api/user/{user_id}/activity", handle_user_activity_api)
     app.router.add_get("/auth", handle_magic_auth)
     app.router.add_get("/login", handle_login)
     app.router.add_get("/logout", handle_logout)

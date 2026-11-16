@@ -820,6 +820,18 @@ async def test_web_dashboard():
     assert user_55555["total_spent"] == 490.0
     assert user_55555["successful_orders"] == 1
     assert user_55555["total_generations"] == 2
+
+    # Test User Activity Timeline Query
+    user_act = await test_db.get_user_activity(55555)
+    assert user_act is not None
+    assert user_act["user"]["user_id"] == 55555
+    assert len(user_act["timeline"]) >= 3 # registration + 2 generations + payment
+    event_types = [ev["type"] for ev in user_act["timeline"]]
+    assert "registration" in event_types
+    assert "generation" in event_types
+    assert "payment" in event_types
+    assert user_act["stats"]["total_generations"] == 2
+    assert user_act["stats"]["total_spent"] == 490.0
     print("[OK] Web Dashboard: Database analytics, charts, payments, and users queries passed.")
 
     # 4. Test HTML Template Rendering
@@ -850,6 +862,9 @@ async def test_web_dashboard():
     html_users = render_users_page(users, admin_id)
     assert "Пользователи бота" in html_users
     assert "55555" in html_users
+    assert "userActivityModal" in html_users
+    assert "uModalTimeline" in html_users
+    assert "view-user-btn" in html_users
 
     html_login = render_login_page("TrivelaBot")
     assert "Вход в панель администратора" in html_login
@@ -874,6 +889,7 @@ async def test_web_dashboard():
     assert "/payments/export.csv" in route_paths
     assert "/generations" in route_paths
     assert "/users" in route_paths
+    assert "/api/user/{user_id}/activity" in route_paths
     assert "/auth" in route_paths
     assert "/login" in route_paths
     assert "/logout" in route_paths

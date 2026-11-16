@@ -1961,6 +1961,221 @@ class Database:
                     res.append(d)
                 return res
 
+    async def get_user_activity(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Retrieves complete chronological activity summary for a user:
+        - Registration & referrer
+        - Generations (tracks created, status, duration, error)
+        - Promo code activations
+        - Payments & tariffs
+        - Referral stats
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+
+            # 1. User profile
+            async with db.execute(
+                """
+                SELECT user_id, username, first_name, balance, paid_balance, gift_balance,
+                       referral_balance, referred_by, created_at
+                FROM users
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            ) as cursor:
+                u_row = await cursor.fetchone()
+                if not u_row:
+                    return None
+                user_info = dict(u_row)
+                user_info["total_balance"] = (user_info.get("paid_balance") or 0) + (user_info.get("gift_balance") or 0)
+
+            # 2. Referrer info
+            referrer_info = None
+            if user_info.get("referred_by"):
+                async with db.execute(
+                    "SELECT user_id, username, first_name FROM users WHERE user_id = ?",
+                    (user_info["referred_by"],),
+                ) as cursor:
+                    ref_row = await cursor.fetchone()
+                    if ref_row:
+                        referrer_info = dict(ref_row)
+
+            # 3. Referrals count
+            async with db.execute(
+                "SELECT COUNT(*) FROM users WHERE referred_by = ?", (user_id,)
+            ) as cursor:
+                referrals_count = (await cursor.fetchone())[0]
+
+            # 4. Generations
+            async with db.execute(
+                """
+                SELECT id, task_id, prompt, artist, genres, instrumental, lyrics,
+                       status, audio_url, duration, delivery_status, error_message, created_at
+                FROM generations
+                WHERE user_id = ?
+                ORDER BY created_at DESC
+                LIMIT 200
+                """,
+                (user_id,),
+            ) as cursor:
+                gen_rows = await cursor.fetchall()
+                generations = [dict(r) for r in gen_rows]
+
+            # 5. Payments
+            async with db.execute(
+                """
+                SELECT id, payment_id, amount, credits, status, provider, created_at, updated_at
+                FROM payments
+                WHERE user_id = ?
+                ORDER BY created_at DESC
+                LIMIT 100
+                """,
+                (user_id,),
+            ) as cursor:
+                pay_rows = await cursor.fetchall()
+                payments = [dict(r) for r in pay_rows]
+
+            # 6. Promo code activations
+            async with db.execute(
+                """
+                SELECT upa.id, upa.promo_type, upa.discount_data, upa.activated_at,
+                       upa.expires_at, upa.is_used, upa.used_at,
+                       pc.code, pc.reward_data
+                FROM user_promo_activations upa
+                LEFT JOIN promo_codes pc ON upa.promo_code_id = pc.id
+                WHERE upa.user_id = ?
+                ORDER BY upa.activated_at DESC
+                LIMIT 50
+                """,
+                (user_id,),
+            ) as cursor:
+                promo_rows = await cursor.fetchall()
+                promos = [dict(r) for r in promo_rows]
+
+            # 7. Build unified chronological timeline
+            timeline = []
+
+            # Event: Registration
+            if user_info.get("created_at"):
+                ref_desc = ""
+                if referrer_info:
+                    r_name = f"@{referrer_info['username']}" if referrer_info.get("username") else f"ID {referrer_info['user_id']}"
+                    ref_desc = f" (по реферальной ссылке от {r_name})"
+                timeline.append({
+                    "type": "registration",
+                    "timestamp": user_info["created_at"],
+                    "title": "Регистрация в боте",
+                    "badge": "Старт",
+                    "badge_color": "primary",
+                    "icon": "bi-person-check",
+                    "details": f"Пользователь запустил бота{ref_desc}. Начальный баланс: {user_info.get('gift_balance', 1)} ген.",
+                })
+
+            # Events: Generations
+            for g in generations:
+                st = g.get("status", "UNKNOWN")
+                st_color = "success" if st == "SUCCESS" else ("danger" if st == "FAILURE" else "warning")
+                st_label = "Успешно" if st == "SUCCESS" else ("Ошибка" if st == "FAILURE" else "В процессе")
+
+                artist_part = f" • Стиль: {g.get('artist')}" if g.get("artist") else ""
+                genre_part = f" • Жанр: {g.get('genres')}" if g.get("genres") else ""
+                dur_part = f" • {int(g['duration'])} сек." if g.get("duration") else ""
+
+                details_text = f"«{g.get('prompt', '')}»{artist_part}{genre_part}{dur_part}"
+                if st == "FAILURE" and g.get("error_message"):
+                    details_text += f" | Ошибка: {g['error_message']}"
+
+                timeline.append({
+                    "type": "generation",
+                    "timestamp": g.get("created_at") or "",
+                    "title": f"Генерация #{g.get('id')}",
+                    "badge": st_label,
+                    "badge_color": st_color,
+                    "icon": "bi-music-note-beamed",
+                    "details": details_text,
+                    "audio_url": g.get("audio_url"),
+                    "task_id": g.get("task_id"),
+                })
+
+            # Events: Payments
+            for p in payments:
+                pst = p.get("status", "pending")
+                p_color = "success" if pst == "succeeded" else ("secondary" if pst in ("canceled", "expired") else "warning")
+                p_label = "Оплачено" if pst == "succeeded" else ("Отменён" if pst in ("canceled", "expired") else "Ожидание")
+                prov = p.get("provider") or "yookassa"
+                prov_label = "ЮKassa" if prov == "yookassa" else ("Telegram Stars" if prov == "telegram_stars" else "CryptoBot")
+
+                timeline.append({
+                    "type": "payment",
+                    "timestamp": p.get("created_at") or "",
+                    "title": f"Оплата {p.get('amount', 0):,.0f} ₽ (+{p.get('credits', 0)} ген.)".replace(",", " "),
+                    "badge": p_label,
+                    "badge_color": p_color,
+                    "icon": "bi-credit-card",
+                    "details": f"Шлюз: {prov_label} • ID: {p.get('payment_id')} • Статус: {pst}",
+                })
+
+            # Events: Promo activations
+            for pr in promos:
+                ptype = pr.get("promo_type")
+                code_name = pr.get("code") or "Промокод"
+                reward_desc = ""
+                if ptype == "bonus_credits":
+                    try:
+                        r_data = json.loads(pr.get("reward_data") or "{}")
+                        bonus_num = r_data.get("credits", 0)
+                        reward_desc = f"+{bonus_num} бесплатных генераций"
+                    except Exception:
+                        reward_desc = "Бонусные генерации"
+                elif ptype == "flat_discount":
+                    try:
+                        r_data = json.loads(pr.get("reward_data") or "{}")
+                        reward_desc = f"Скидка {r_data.get('discount_percent', 0)}% на 24 часа"
+                    except Exception:
+                        reward_desc = "Скидка на 24 часа"
+                else:
+                    reward_desc = "Промо-скидка"
+
+                used_str = " (Покупка совершена)" if pr.get("is_used") else " (Не использован)"
+
+                timeline.append({
+                    "type": "promo",
+                    "timestamp": pr.get("activated_at") or "",
+                    "title": f"Промокод: {code_name}",
+                    "badge": "Промокод",
+                    "badge_color": "info",
+                    "icon": "bi-ticket-perforated",
+                    "details": f"{reward_desc}{used_str}",
+                })
+
+            # Sort timeline by timestamp DESC (newest events first)
+            timeline.sort(key=lambda x: str(x.get("timestamp") or ""), reverse=True)
+
+            # Compute summary stats
+            successful_payments = [p for p in payments if p.get("status") == "succeeded"]
+            total_spent = sum(p.get("amount", 0) for p in successful_payments)
+            success_gens = sum(1 for g in generations if g.get("status") == "SUCCESS")
+            failed_gens = sum(1 for g in generations if g.get("status") == "FAILURE")
+
+            return {
+                "user": user_info,
+                "referrer": referrer_info,
+                "stats": {
+                    "total_generations": len(generations),
+                    "success_generations": success_gens,
+                    "failed_generations": failed_gens,
+                    "total_payments": len(payments),
+                    "successful_payments": len(successful_payments),
+                    "total_spent": total_spent,
+                    "promos_count": len(promos),
+                    "referrals_count": referrals_count,
+                },
+                "timeline": timeline,
+                "generations": generations,
+                "payments": payments,
+                "promos": promos,
+            }
+
     async def record_uptime_check(
         self,
         service: str,
