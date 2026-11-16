@@ -112,11 +112,13 @@ async def show_tariffs(event: Message | CallbackQuery) -> None:
     text = (
         "💳 <b>Пополнение баланса</b>\n\n"
         f"{discount_banner}"
-        "Выберите подходящий пакет генераций музыки.\n"
-        "Оплата производится онлайн через защищенный шлюз <b>ЮKassa</b> "
-        "(банковские карты РФ, СБП, SberPay, Mir Pay, ЮMoney):\n\n"
+        "Выберите подходящий пакет генераций музыки:\n\n"
         f"{tariffs_summary}\n\n"
-        "<i>Нажмите на нужный пакет ниже, чтобы перейти к оплате:</i>"
+        "🌐 <b>Доступные способы оплаты:</b>\n"
+        "• 🇷🇺 <b>Карты РФ / СБП</b> (ЮKassa, SberPay, Mir Pay, T-Pay)\n"
+        "• ⭐ <b>Telegram Stars</b> (быстрая оплата звёздами прямо в Telegram)\n"
+        "• 💎 <b>Криптовалюта</b> (CryptoBot: USDT, TON, BTC и др.)\n\n"
+        "<i>Нажмите на нужный пакет ниже, чтобы выбрать удобный способ оплаты:</i>"
     )
 
     if isinstance(event, CallbackQuery):
