@@ -2116,27 +2116,66 @@ class Database:
                 })
 
             # Events: Promo activations
-            for pr in promos:
-                ptype = pr.get("promo_type")
-                code_name = pr.get("code") or "Промокод"
-                reward_desc = ""
-                if ptype == "bonus_credits":
-                    try:
-                        r_data = json.loads(pr.get("reward_data") or "{}")
-                        bonus_num = r_data.get("credits", 0)
-                        reward_desc = f"+{bonus_num} бесплатных генераций"
-                    except Exception:
-                        reward_desc = "Бонусные генерации"
-                elif ptype == "flat_discount":
-                    try:
-                        r_data = json.loads(pr.get("reward_data") or "{}")
-                        reward_desc = f"Скидка {r_data.get('discount_percent', 0)}% на 24 часа"
-                    except Exception:
-                        reward_desc = "Скидка на 24 часа"
-                else:
-                    reward_desc = "Промо-скидка"
+            now_str = get_msk_now().strftime("%Y-%m-%d %H:%M:%S")
+            pack_names_map = {
+                "pack_5": "5 треков",
+                "pack_15": "15 треков",
+                "pack_30": "30 треков",
+                "pack_60": "60 треков",
+            }
 
-                used_str = " (Покупка совершена)" if pr.get("is_used") else " (Не использован)"
+            for pr in promos:
+                ptype = pr.get("promo_type") or ""
+                code_name = pr.get("code") or "Промокод"
+
+                # Parse discount_data (from user activation) or reward_data (from promo_codes)
+                raw_payload = pr.get("discount_data") or pr.get("reward_data") or "{}"
+                if isinstance(raw_payload, str):
+                    try:
+                        r_data = json.loads(raw_payload)
+                    except Exception:
+                        r_data = {}
+                elif isinstance(raw_payload, dict):
+                    r_data = raw_payload
+                else:
+                    r_data = {}
+
+                reward_desc = ""
+                if ptype == "credits" or "credits" in r_data:
+                    credits_count = r_data.get("credits", 0)
+                    reward_desc = f"+{credits_count} бонусных генераций"
+                elif ptype == "discount_fixed" or "percent" in r_data or "discount_percent" in r_data:
+                    pct = r_data.get("percent") or r_data.get("discount_percent") or 0
+                    reward_desc = f"Скидка {pct}% на все тарифы (24 часа)"
+                elif ptype == "discount_custom" or "packs" in r_data:
+                    packs_map = r_data.get("packs", {})
+                    pack_items = []
+                    for pid, disc in packs_map.items():
+                        if int(disc) > 0:
+                            pname = pack_names_map.get(pid, pid)
+                            pack_items.append(f"{pname} (-{disc}%)")
+                    if pack_items:
+                        reward_desc = f"Скидка: {', '.join(pack_items)} (24 часа)"
+                    else:
+                        reward_desc = "Персональная скидка на тарифы (24 часа)"
+                else:
+                    reward_desc = "Скидка на пополнение"
+
+                # Format usage status
+                is_used = pr.get("is_used", 0)
+                exp_at = pr.get("expires_at")
+                if is_used == 1:
+                    if ptype == "credits" or "credits" in r_data:
+                        used_str = " • Начислены на баланс"
+                    else:
+                        used_str = " • Покупка совершена"
+                elif is_used == 2:
+                    used_str = " • Заменён другим промокодом"
+                else:
+                    if exp_at and exp_at < now_str:
+                        used_str = " • Истёк (не использован)"
+                    else:
+                        used_str = " • Активен (ожидает покупки)"
 
                 timeline.append({
                     "type": "promo",

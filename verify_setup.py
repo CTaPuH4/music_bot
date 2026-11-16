@@ -986,6 +986,13 @@ async def test_multiprovider_payments():
     assert disc_stars == max(1, round(392.0 / config.settings.telegram_stars_rub_rate))
     assert disc_crypto == max(0.1, round(392.0 / config.settings.cryptobot_rub_rate, 2))
 
+    # Verify user activity timeline accurately renders promo details (e.g. 20% discount)
+    u_activity = await test_db.get_user_activity(user_id)
+    promo_event = next(ev for ev in u_activity["timeline"] if ev["type"] == "promo")
+    assert "SALE20" in promo_event["title"]
+    assert "20%" in promo_event["details"]
+    assert "Скидка" in promo_event["details"]
+
     # 4. Test Keyboards generation
     kb_methods = get_payment_methods_keyboard("pack_20", disc_rub, disc_stars, disc_crypto)
     assert any("pay_method:yookassa:pack_20" in btn.callback_data for row in kb_methods.inline_keyboard for btn in row)
