@@ -971,6 +971,7 @@ async def execute_generation(
             audio_url=audio_url,
             duration=float(duration) if duration else None,
             image_url=image_url,
+            delivery_status="PENDING",
         )
 
         # Determine track title and authorship
@@ -1064,6 +1065,7 @@ async def execute_generation(
             )
 
         if sent_audio:
+            await db.mark_generation_delivered(task_id)
             # Delete waiting message on success
             try:
                 await status_msg.delete()

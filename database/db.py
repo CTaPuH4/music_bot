@@ -743,6 +743,7 @@ class Database:
         error_message: Optional[str] = None,
         raw_response: Optional[str] = None,
         image_url: Optional[str] = None,
+        delivery_status: Optional[str] = None,
     ) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
@@ -753,10 +754,11 @@ class Database:
                     duration = coalesce(?, duration),
                     error_message = coalesce(?, error_message),
                     raw_response = coalesce(?, raw_response),
-                    image_url = coalesce(?, image_url)
+                    image_url = coalesce(?, image_url),
+                    delivery_status = coalesce(?, delivery_status)
                 WHERE task_id = ?
                 """,
-                (status, audio_url, duration, error_message, raw_response, image_url, task_id),
+                (status, audio_url, duration, error_message, raw_response, image_url, delivery_status, task_id),
             )
             await db.commit()
 
