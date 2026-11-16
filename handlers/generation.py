@@ -675,6 +675,17 @@ async def process_prompt(message: Message, state: FSMContext) -> None:
         )
         return
 
+    MAX_PROMPT_CHARS = 600
+    if len(prompt_text) > MAX_PROMPT_CHARS:
+        await message.answer(
+            f"⚠️ <b>Описание идеи слишком длинное</b> ({len(prompt_text)} симв.)!\n\n"
+            f"Максимальная длина описания идеи — <b>до {MAX_PROMPT_CHARS} символов</b>.\n"
+            "Если вы хотите создать песню с собственными стихами или куплетами — выберите в главном меню режим <b>«✍️ Свой текст»</b>.\n\n"
+            "Или сократите описание темы трека и отправьте снова 👇",
+            parse_mode="HTML",
+        )
+        return
+
     # Short confirmation message of user's choice
     await message.answer(f"🎵 Идея: <i>«{prompt_text}»</i>", parse_mode="HTML")
 
@@ -704,6 +715,17 @@ async def handle_quick_prompt(message: Message, state: FSMContext) -> None:
     """Triggered when user sends free text without active state."""
     prompt_text = message.text.strip()
     if len(prompt_text) < 3:
+        return
+
+    MAX_PROMPT_CHARS = 600
+    if len(prompt_text) > MAX_PROMPT_CHARS:
+        await message.answer(
+            f"⚠️ <b>Текст идеи слишком длинный</b> ({len(prompt_text)} симв.)!\n\n"
+            f"Максимальная длина описания идеи — <b>до {MAX_PROMPT_CHARS} символов</b>.\n"
+            "Если вы хотите создать трек со своими стихами или текстом песни — выберите в меню <b>«🎵 Создать трек» → «✍️ Свой текст»</b>.\n\n"
+            "Или сформулируйте идею/настроение лаконичнее и отправьте снова 👇",
+            parse_mode="HTML",
+        )
         return
 
     # Subscription check
