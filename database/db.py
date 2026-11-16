@@ -164,7 +164,7 @@ class Database:
                     gift_balance INTEGER DEFAULT 0,
                     referral_balance REAL DEFAULT 0.0,
                     referred_by INTEGER,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP DEFAULT (datetime('now', '+3 hours'))
                 )
             """)
 
@@ -207,7 +207,7 @@ class Database:
                     status TEXT DEFAULT 'PENDING',
                     audio_url TEXT,
                     duration REAL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT (datetime('now', '+3 hours')),
                     FOREIGN KEY (user_id) REFERENCES users (user_id)
                 )
             """)
@@ -253,7 +253,7 @@ class Database:
                     status TEXT NOT NULL,
                     latency_ms REAL DEFAULT 0.0,
                     error_message TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP DEFAULT (datetime('now', '+3 hours'))
                 )
             """)
             await db.execute("CREATE INDEX IF NOT EXISTS idx_uptime_service_created ON uptime_logs (service, created_at)")
@@ -266,8 +266,8 @@ class Database:
                     amount REAL NOT NULL,
                     credits INTEGER NOT NULL,
                     status TEXT DEFAULT 'pending',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT (datetime('now', '+3 hours')),
+                    updated_at TIMESTAMP DEFAULT (datetime('now', '+3 hours')),
                     FOREIGN KEY (user_id) REFERENCES users (user_id)
                 )
             """)
@@ -395,9 +395,37 @@ class Database:
                 CREATE TABLE IF NOT EXISTS bot_settings (
                     key TEXT PRIMARY KEY,
                     value TEXT,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    updated_at TIMESTAMP DEFAULT (datetime('now', '+3 hours'))
                 )
             """)
+
+            # One-time migration: convert legacy UTC timestamps (+0) to MSK (+3 hours)
+            async with db.execute("SELECT value FROM bot_settings WHERE key = 'msk_timestamps_migrated'") as cursor:
+                migrated_row = await cursor.fetchone()
+
+            if not migrated_row:
+                try:
+                    await db.execute("UPDATE generations SET created_at = datetime(created_at, '+3 hours') WHERE created_at IS NOT NULL")
+                except Exception:
+                    pass
+                try:
+                    await db.execute("UPDATE payments SET created_at = datetime(created_at, '+3 hours'), updated_at = datetime(updated_at, '+3 hours') WHERE created_at IS NOT NULL")
+                except Exception:
+                    pass
+                try:
+                    await db.execute("UPDATE users SET created_at = datetime(created_at, '+3 hours') WHERE created_at IS NOT NULL")
+                except Exception:
+                    pass
+                try:
+                    await db.execute("UPDATE uptime_logs SET created_at = datetime(created_at, '+3 hours') WHERE created_at IS NOT NULL")
+                except Exception:
+                    pass
+                try:
+                    await db.execute("INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('msk_timestamps_migrated', '1')")
+                except Exception:
+                    pass
+                await db.commit()
+                logger.info("Migrated legacy UTC timestamps to MSK (+3 hours) successfully.")
 
             # Create promo_codes table (exact case-sensitive code matching)
             await db.execute("""
@@ -492,11 +520,12 @@ class Database:
             valid_referrer = (
                 referred_by if referred_by and referred_by != user_id else None
             )
+            now_str = get_msk_now().strftime("%Y-%m-%d %H:%M:%S")
 
             await db.execute(
                 """
-                INSERT INTO users (user_id, username, first_name, balance, paid_balance, gift_balance, referral_balance, referred_by)
-                VALUES (?, ?, ?, ?, 0, ?, 0.0, ?)
+                INSERT INTO users (user_id, username, first_name, balance, paid_balance, gift_balance, referral_balance, referred_by, created_at)
+                VALUES (?, ?, ?, ?, 0, ?, 0.0, ?, ?)
                 """,
                 (
                     user_id,
@@ -505,6 +534,7 @@ class Database:
                     settings.initial_user_credits,
                     settings.initial_user_credits,
                     valid_referrer,
+                    now_str,
                 ),
             )
             await db.commit()
@@ -684,19 +714,22 @@ class Database:
         status: str = "PENDING",
         error_message: Optional[str] = None,
         raw_response: Optional[str] = None,
+        created_at: Optional[str] = None,
     ) -> None:
+        if not created_at:
+            created_at = get_msk_now().strftime("%Y-%m-%d %H:%M:%S")
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
                 INSERT INTO generations (
                     user_id, task_id, prompt, artist, genres,
-                    instrumental, lyrics, status, error_message, raw_response
+                    instrumental, lyrics, status, error_message, raw_response, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_id, task_id, prompt, artist, genres,
-                    int(instrumental), lyrics, status, error_message, raw_response
+                    int(instrumental), lyrics, status, error_message, raw_response, created_at
                 ),
             )
             await db.commit()
@@ -809,13 +842,14 @@ class Database:
         provider: str = "yookassa",
         currency: str = "RUB",
     ) -> None:
+        now_str = get_msk_now().strftime("%Y-%m-%d %H:%M:%S")
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
-                INSERT INTO payments (payment_id, user_id, amount, credits, status, promo_activation_id, provider, currency)
-                VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)
+                INSERT INTO payments (payment_id, user_id, amount, credits, status, promo_activation_id, provider, currency, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
                 """,
-                (payment_id, user_id, amount, credits, promo_activation_id, provider, currency),
+                (payment_id, user_id, amount, credits, promo_activation_id, provider, currency, now_str, now_str),
             )
             await db.commit()
 
@@ -843,15 +877,16 @@ class Database:
         Returns the payment row if it was changed to 'succeeded',
         or None if it was already processed before or not found.
         """
+        now_str = get_msk_now().strftime("%Y-%m-%d %H:%M:%S")
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 """
                 UPDATE payments
-                SET status = 'succeeded', updated_at = CURRENT_TIMESTAMP
+                SET status = 'succeeded', updated_at = ?
                 WHERE payment_id = ? AND status != 'succeeded'
                 """,
-                (payment_id,),
+                (now_str, payment_id),
             )
             if cursor.rowcount == 0:
                 return None
@@ -865,14 +900,15 @@ class Database:
                 return dict(updated_row) if updated_row else None
 
     async def mark_payment_canceled(self, payment_id: str) -> None:
+        now_str = get_msk_now().strftime("%Y-%m-%d %H:%M:%S")
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
                 UPDATE payments
-                SET status = 'canceled', updated_at = CURRENT_TIMESTAMP
+                SET status = 'canceled', updated_at = ?
                 WHERE payment_id = ?
                 """,
-                (payment_id,),
+                (now_str, payment_id),
             )
             await db.commit()
 
@@ -884,7 +920,7 @@ class Database:
                 """
                 SELECT * FROM payments
                 WHERE status = 'pending'
-                  AND created_at >= datetime('now', '-2 hours')
+                  AND created_at >= datetime('now', '+3 hours', '-2 hours')
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
@@ -895,14 +931,16 @@ class Database:
 
     async def cleanup_stale_payments(self, max_age_hours: int = 2) -> int:
         """Marks pending payments older than max_age_hours as canceled."""
+        now_str = get_msk_now().strftime("%Y-%m-%d %H:%M:%S")
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 f"""
                 UPDATE payments
-                SET status = 'canceled', updated_at = CURRENT_TIMESTAMP
+                SET status = 'canceled', updated_at = ?
                 WHERE status = 'pending'
-                  AND created_at <= datetime('now', '-{max_age_hours} hours')
-                """
+                  AND created_at <= datetime('now', '+3 hours', '-{max_age_hours} hours')
+                """,
+                (now_str,)
             )
             await db.commit()
             return cursor.rowcount
@@ -915,7 +953,7 @@ class Database:
                 SELECT COUNT(*) FROM payments
                 WHERE user_id = ?
                   AND status = 'pending'
-                  AND created_at >= datetime('now', '-{max_age_minutes} minutes')
+                  AND created_at >= datetime('now', '+3 hours', '-{max_age_minutes} minutes')
                 """,
                 (user_id,),
             ) as cursor:
@@ -1830,13 +1868,14 @@ class Database:
         """Records an uptime health check result for bot or treblo_api."""
         if service in ("treblo", "treblo_api"):
             service = "treblo_api"
+        now_str = get_msk_now().strftime("%Y-%m-%d %H:%M:%S")
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
-                INSERT INTO uptime_logs (service, status, latency_ms, error_message)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO uptime_logs (service, status, latency_ms, error_message, created_at)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (service, status.upper(), latency_ms, error_message),
+                (service, status.upper(), latency_ms, error_message, now_str),
             )
             await db.commit()
 
@@ -1855,7 +1894,7 @@ class Database:
                     count(*) as total,
                     coalesce(sum(case when status = 'UP' then 1 else 0 end), 0) as up_count
                 FROM uptime_logs
-                WHERE service = 'bot' AND created_at >= datetime('now', ? || ' hours')
+                WHERE service = 'bot' AND created_at >= datetime('now', '+3 hours', ? || ' hours')
                 """,
                 (f"-{hours}",),
             ) as cursor:
@@ -1872,7 +1911,7 @@ class Database:
                     coalesce(sum(case when status = 'UP' then 1 else 0 end), 0) as up_count,
                     coalesce(avg(case when status = 'UP' then latency_ms else null end), 0.0) as avg_latency
                 FROM uptime_logs
-                WHERE service IN ('treblo_api', 'treblo') AND created_at >= datetime('now', ? || ' hours')
+                WHERE service IN ('treblo_api', 'treblo') AND created_at >= datetime('now', '+3 hours', ? || ' hours')
                 """,
                 (f"-{hours}",),
             ) as cursor:
@@ -1889,7 +1928,7 @@ class Database:
                     count(*) as total,
                     coalesce(sum(case when status = 'UP' then 1 else 0 end), 0) as up_count
                 FROM uptime_logs
-                WHERE service IN ('treblo_api', 'treblo') AND created_at >= datetime('now', '-7 days')
+                WHERE service IN ('treblo_api', 'treblo') AND created_at >= datetime('now', '+3 hours', '-7 days')
                 """
             ) as cursor:
                 row = await cursor.fetchone()
@@ -1929,7 +1968,7 @@ class Database:
                     coalesce(sum(case when status = 'UP' then 1 else 0 end), 0) as up_checks,
                     coalesce(avg(case when status = 'UP' then latency_ms else null end), 0.0) as avg_lat
                 FROM uptime_logs
-                WHERE created_at >= datetime('now', ? || ' hours')
+                WHERE created_at >= datetime('now', '+3 hours', ? || ' hours')
                 GROUP BY hour_key, service
                 ORDER BY hour_key ASC
                 """,
@@ -1938,8 +1977,7 @@ class Database:
                 hourly_rows = await cursor.fetchall()
 
             # Organize hourly data
-            from datetime import datetime, timedelta
-            now_dt = datetime.now()
+            now_dt = get_msk_now()
             slot_keys = []
             slot_labels = []
             for i in range(hours - 1, -1, -1):
@@ -2013,7 +2051,7 @@ class Database:
         """Deletes uptime logs older than specified days."""
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
-                "DELETE FROM uptime_logs WHERE created_at < datetime('now', ? || ' days')",
+                "DELETE FROM uptime_logs WHERE created_at < datetime('now', '+3 hours', ? || ' days')",
                 (f"-{days}",),
             )
             await db.commit()
