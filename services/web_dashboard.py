@@ -383,6 +383,10 @@ def render_dashboard_page(
     labels_json = json.dumps(chart_data.get("labels", []))
     revenue_series_json = json.dumps(chart_data.get("revenue", []))
     gens_series_json = json.dumps(chart_data.get("generations", []))
+    users_series_json = json.dumps(chart_data.get("new_users", []))
+    hourly_activity_labels_json = json.dumps(chart_data.get("hourly_labels", []))
+    hourly_gens_series_json = json.dumps(chart_data.get("hourly_generations", []))
+    hourly_users_series_json = json.dumps(chart_data.get("hourly_users", []))
 
     content = f"""
     <div class="d-flex justify-content-between align-items-center mb-4">
@@ -470,7 +474,7 @@ def render_dashboard_page(
         </div>
     </div>
 
-    <!-- CHARTS SECTION -->
+    <!-- CHARTS SECTION: ROW 1 (Revenue & Generations) -->
     <div class="row g-4 mb-4">
         <!-- Chart 1: Daily Revenue -->
         <div class="col-12 col-lg-6">
@@ -494,6 +498,35 @@ def render_dashboard_page(
                 </div>
                 <div style="position: relative; height: 260px; width: 100%;">
                     <canvas id="generationsChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- CHARTS SECTION: ROW 2 (New Users & Hourly Audience Activity) -->
+    <div class="row g-4 mb-4">
+        <!-- Chart 3: Daily New Users -->
+        <div class="col-12 col-lg-6">
+            <div class="card card-custom p-4 h-100">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h5 class="card-title fw-bold mb-0"><i class="bi bi-person-plus me-2 text-warning"></i>Новые пользователи (последние 14 дней)</h5>
+                    <span class="badge bg-dark border border-secondary text-muted">пользователей в день</span>
+                </div>
+                <div style="position: relative; height: 260px; width: 100%;">
+                    <canvas id="usersChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Chart 4: Hourly Activity Distribution -->
+        <div class="col-12 col-lg-6">
+            <div class="card card-custom p-4 h-100">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h5 class="card-title fw-bold mb-0"><i class="bi bi-clock-history me-2 text-primary"></i>Активность аудитории по часам суток (МСК)</h5>
+                    <span class="badge bg-dark border border-secondary text-muted">00:00 — 23:00</span>
+                </div>
+                <div style="position: relative; height: 260px; width: 100%;">
+                    <canvas id="hourlyActivityChart"></canvas>
                 </div>
             </div>
         </div>
@@ -608,6 +641,10 @@ def render_dashboard_page(
         const chartLabels = {labels_json};
         const revData = {revenue_series_json};
         const gensData = {gens_series_json};
+        const usersData = {users_series_json};
+        const hourlyActivityLabels = {hourly_activity_labels_json};
+        const hourlyGensData = {hourly_gens_series_json};
+        const hourlyUsersData = {hourly_users_series_json};
 
         // Revenue Chart (Gradient Line)
         const ctxRev = document.getElementById('revenueChart').getContext('2d');
@@ -698,6 +735,131 @@ def render_dashboard_page(
                 }}
             }}
         }});
+
+        // New Users Chart (Bar)
+        const ctxUsers = document.getElementById('usersChart');
+        if (ctxUsers) {{
+            new Chart(ctxUsers.getContext('2d'), {{
+                type: 'bar',
+                data: {{
+                    labels: chartLabels,
+                    datasets: [{{
+                        label: 'Новые пользователи',
+                        data: usersData,
+                        backgroundColor: '#f59e0b',
+                        borderRadius: 6,
+                        hoverBackgroundColor: '#fbbf24',
+                    }}]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {{
+                        legend: {{ display: false }},
+                        tooltip: {{
+                            callbacks: {{
+                                label: function(context) {{
+                                    return context.parsed.y.toLocaleString('ru-RU') + ' новых пользователей';
+                                }}
+                            }}
+                        }}
+                    }},
+                    scales: {{
+                        y: {{
+                            beginAtZero: true,
+                            grid: {{ color: '#1f2937' }},
+                            ticks: {{
+                                color: '#9ca3af',
+                                stepSize: 1
+                            }}
+                        }},
+                        x: {{
+                            grid: {{ display: false }},
+                            ticks: {{ color: '#9ca3af' }}
+                        }}
+                    }}
+                }}
+            }});
+        }}
+
+        // Hourly Activity Distribution Chart (Grouped Bar)
+        const ctxHourly = document.getElementById('hourlyActivityChart');
+        if (ctxHourly) {{
+            new Chart(ctxHourly.getContext('2d'), {{
+                type: 'bar',
+                data: {{
+                    labels: hourlyActivityLabels,
+                    datasets: [
+                        {{
+                            label: 'Генерации треков',
+                            data: hourlyGensData,
+                            backgroundColor: '#6366f1',
+                            borderRadius: 4,
+                            hoverBackgroundColor: '#818cf8',
+                        }},
+                        {{
+                            label: 'Новые пользователи',
+                            data: hourlyUsersData,
+                            backgroundColor: '#f59e0b',
+                            borderRadius: 4,
+                            hoverBackgroundColor: '#fbbf24',
+                        }}
+                    ]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {{
+                        mode: 'index',
+                        intersect: false,
+                    }},
+                    plugins: {{
+                        legend: {{
+                            display: true,
+                            position: 'top',
+                            labels: {{
+                                color: '#e5e7eb',
+                                font: {{ size: 11 }},
+                                boxWidth: 12,
+                                boxHeight: 12,
+                                useBorderRadius: true,
+                                borderRadius: 3
+                            }}
+                        }},
+                        tooltip: {{
+                            callbacks: {{
+                                footer: function(tooltipItems) {{
+                                    let sum = 0;
+                                    tooltipItems.forEach(function(tooltipItem) {{
+                                        sum += tooltipItem.parsed.y;
+                                    }});
+                                    return 'Всего активности: ' + sum;
+                                }}
+                            }}
+                        }}
+                    }},
+                    scales: {{
+                        y: {{
+                            beginAtZero: true,
+                            grid: {{ color: '#1f2937' }},
+                            ticks: {{
+                                color: '#9ca3af',
+                                stepSize: 1
+                            }}
+                        }},
+                        x: {{
+                            grid: {{ display: false }},
+                            ticks: {{
+                                color: '#9ca3af',
+                                maxRotation: 45,
+                                minRotation: 0,
+                                font: {{ size: 10 }}
+                            }}
+                        }}
+                    }}
+                }}
+            }});
+        }}
 
         // Treblo API Latency Chart (Gradient Line)
         const ctxUptime = document.getElementById('uptimeChart');

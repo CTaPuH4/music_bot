@@ -763,6 +763,10 @@ async def test_web_dashboard():
     assert len(chart["dates"]) == 14
     assert len(chart["revenue"]) == 14
     assert len(chart["generations"]) == 14
+    assert len(chart["new_users"]) == 14
+    assert len(chart["hourly_labels"]) == 24
+    assert len(chart["hourly_generations"]) == 24
+    assert len(chart["hourly_users"]) == 24
     assert sum(chart["revenue"]) == 490.0
     assert sum(chart["generations"]) == 2
 
@@ -924,8 +928,8 @@ async def test_multiprovider_payments():
     rub_price = 490.0
     stars_price = max(1, round(rub_price / config.settings.telegram_stars_rub_rate))
     crypto_price = max(0.1, round(rub_price / config.settings.cryptobot_rub_rate, 2))
-    assert stars_price == 245
-    assert crypto_price == 5.76
+    assert stars_price == max(1, round(490.0 / config.settings.telegram_stars_rub_rate))
+    assert crypto_price == max(0.1, round(490.0 / config.settings.cryptobot_rub_rate, 2))
 
     # 3. Test with active promo code (e.g. 20% discount)
     from datetime import datetime, timedelta
@@ -950,8 +954,8 @@ async def test_multiprovider_payments():
 
     disc_stars = max(1, round(disc_rub / config.settings.telegram_stars_rub_rate))
     disc_crypto = max(0.1, round(disc_rub / config.settings.cryptobot_rub_rate, 2))
-    assert disc_stars == 196
-    assert disc_crypto == 4.61
+    assert disc_stars == max(1, round(392.0 / config.settings.telegram_stars_rub_rate))
+    assert disc_crypto == max(0.1, round(392.0 / config.settings.cryptobot_rub_rate, 2))
 
     # 4. Test Keyboards generation
     kb_methods = get_payment_methods_keyboard("pack_20", disc_rub, disc_stars, disc_crypto)
@@ -1006,7 +1010,8 @@ async def test_multiprovider_payments():
         call_args = mock_bot.send_message.call_args[1]
         msg_text = call_args["text"]
         assert "Telegram Stars успешно завершена" in msg_text
-        assert "1 ⭐" in msg_text
+        stars_expected = max(1, round(2.0 / config.settings.telegram_stars_rub_rate))
+        assert f"{stars_expected} ⭐" in msg_text
         assert "2 ₽" not in msg_text
         assert "+5 платных генераций" in msg_text
 

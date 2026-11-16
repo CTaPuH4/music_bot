@@ -1743,7 +1743,7 @@ class Database:
             }
 
     async def get_daily_chart_data(self, days: int = 14) -> Dict[str, Any]:
-        """Returns daily series for Chart.js (revenue and track generations)."""
+        """Returns daily series for Chart.js (revenue, track generations, new users, and hourly activity)."""
         now = get_msk_now()
         dates_list = [(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days - 1, -1, -1)]
         labels = [(now - timedelta(days=i)).strftime("%d.%m") for i in range(days - 1, -1, -1)]
@@ -1751,8 +1751,16 @@ class Database:
 
         revenue_map = {d: 0.0 for d in dates_list}
         gens_map = {d: 0 for d in dates_list}
+        users_map = {d: 0 for d in dates_list}
+
+        # 24 hours of the day (00:00 to 23:00 MSK)
+        hour_labels = [f"{h:02d}:00" for h in range(24)]
+        hourly_gens_map = {f"{h:02d}": 0 for h in range(24)}
+        hourly_users_map = {f"{h:02d}": 0 for h in range(24)}
+        dt_30d = (now - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
 
         async with aiosqlite.connect(self.db_path) as db:
+            # 1. Daily revenue
             async with db.execute(
                 """
                 SELECT date(created_at) as dt, coalesce(SUM(amount), 0)
@@ -1766,6 +1774,7 @@ class Database:
                     if dt in revenue_map:
                         revenue_map[dt] = float(rev)
 
+            # 2. Daily generations
             async with db.execute(
                 """
                 SELECT date(created_at) as dt, COUNT(*)
@@ -1779,11 +1788,57 @@ class Database:
                     if dt in gens_map:
                         gens_map[dt] = int(cnt)
 
+            # 3. Daily new users
+            async with db.execute(
+                """
+                SELECT date(created_at) as dt, COUNT(*)
+                FROM users
+                WHERE created_at >= ?
+                GROUP BY dt
+                """,
+                (dt_start,),
+            ) as cursor:
+                async for dt, cnt in cursor:
+                    if dt in users_map:
+                        users_map[dt] = int(cnt)
+
+            # 4. Hourly generations activity (last 30 days)
+            async with db.execute(
+                """
+                SELECT strftime('%H', created_at) as hr, COUNT(*)
+                FROM generations
+                WHERE created_at >= ?
+                GROUP BY hr
+                """,
+                (dt_30d,),
+            ) as cursor:
+                async for hr, cnt in cursor:
+                    if hr in hourly_gens_map:
+                        hourly_gens_map[hr] = int(cnt)
+
+            # 5. Hourly new users registration activity (last 30 days)
+            async with db.execute(
+                """
+                SELECT strftime('%H', created_at) as hr, COUNT(*)
+                FROM users
+                WHERE created_at >= ?
+                GROUP BY hr
+                """,
+                (dt_30d,),
+            ) as cursor:
+                async for hr, cnt in cursor:
+                    if hr in hourly_users_map:
+                        hourly_users_map[hr] = int(cnt)
+
         return {
             "labels": labels,
             "dates": dates_list,
             "revenue": [revenue_map[d] for d in dates_list],
             "generations": [gens_map[d] for d in dates_list],
+            "new_users": [users_map[d] for d in dates_list],
+            "hourly_labels": hour_labels,
+            "hourly_generations": [hourly_gens_map[f"{h:02d}"] for h in range(24)],
+            "hourly_users": [hourly_users_map[f"{h:02d}"] for h in range(24)],
         }
 
     async def get_all_payments_detailed(self, limit: int = 1000) -> List[Dict[str, Any]]:
