@@ -1039,24 +1039,19 @@ def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> 
         if status == "SUCCESS":
             status_badge = '<span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Готово</span>'
         elif status == "FAILURE":
-            err_short = html.escape(err_msg[:50] + "...") if len(err_msg) > 50 else err_msg_escaped
-            err_hint = f'<div class="text-danger small mt-1 font-monospace" style="font-size: 0.72rem; max-width: 170px; word-break: break-word;" title="{err_msg_escaped}">{err_short}</div>' if err_msg else ''
             status_badge = f"""
-            <div class="d-inline-flex flex-column align-items-start">
-                <div class="d-flex align-items-center gap-1">
-                    <span class="badge bg-danger"><i class="bi bi-x-circle me-1"></i>Ошибка</span>
-                    <button type="button" class="btn btn-sm btn-outline-danger px-1 py-0 view-prompt-btn" style="font-size: 0.70rem;"
-                            data-bs-toggle="modal" data-bs-target="#promptModal"
-                            data-gid="{gid}"
-                            data-artist="{artist_escaped}"
-                            data-genres="{genres_escaped}"
-                            data-date="{date_str}"
-                            data-user="{uname}"
-                            title="Посмотреть причину ошибки">
-                        <i class="bi bi-bug me-1"></i>Причина
-                    </button>
-                </div>
-                {err_hint}
+            <div class="d-inline-flex align-items-center gap-1">
+                <span class="badge bg-danger"><i class="bi bi-x-circle me-1"></i>Ошибка</span>
+                <button type="button" class="btn btn-sm btn-outline-danger px-1 py-0 view-prompt-btn" style="font-size: 0.70rem;"
+                        data-bs-toggle="modal" data-bs-target="#promptModal"
+                        data-gid="{gid}"
+                        data-artist="{artist_escaped}"
+                        data-genres="{genres_escaped}"
+                        data-date="{date_str}"
+                        data-user="{uname}"
+                        title="Посмотреть причину ошибки">
+                    <i class="bi bi-bug me-1"></i>Причина
+                </button>
             </div>
             """
         else:
@@ -1316,49 +1311,63 @@ def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> 
                 }
             });
 
-            // Copy buttons
-            $('#copyPromptBtn').on('click', function() {
+            // Robust copy helper with fallback for non-HTTPS / restricted browser contexts
+            function copyTextToClipboard(text, $btn, originalHtml, successMsg) {
+                if (!text || text.trim() === '') return;
+                function onCopied() {
+                    $btn.html('<i class="bi bi-check2 me-1"></i>' + successMsg);
+                    setTimeout(function() {
+                        $btn.html(originalHtml);
+                    }, 2000);
+                }
+
+                if (navigator.clipboard && window.isSecureContext) {
+                    navigator.clipboard.writeText(text).then(onCopied).catch(function() {
+                        fallbackExecCopy(text, onCopied);
+                    });
+                } else {
+                    fallbackExecCopy(text, onCopied);
+                }
+            }
+
+            function fallbackExecCopy(text, callback) {
+                const tempTextArea = document.createElement('textarea');
+                tempTextArea.value = text;
+                tempTextArea.style.position = 'fixed';
+                tempTextArea.style.top = '0';
+                tempTextArea.style.left = '-9999px';
+                tempTextArea.style.opacity = '0';
+                document.body.appendChild(tempTextArea);
+                tempTextArea.focus();
+                tempTextArea.select();
+                try {
+                    document.execCommand('copy');
+                    if (callback) callback();
+                } catch (e) {
+                    console.error('Fallback copy error:', e);
+                }
+                document.body.removeChild(tempTextArea);
+            }
+
+            // Delegated click handlers for copy buttons
+            $(document).on('click', '#copyPromptBtn', function() {
                 const text = $('#modalPromptText').val();
-                navigator.clipboard.writeText(text).then(function() {
-                    const btn = $('#copyPromptBtn');
-                    btn.html('<i class="bi bi-check2 me-1"></i>Скопировано!');
-                    setTimeout(function() {
-                        btn.html('<i class="bi bi-clipboard me-1"></i>Копировать промт');
-                    }, 2000);
-                });
+                copyTextToClipboard(text, $(this), '<i class="bi bi-clipboard me-1"></i>Копировать промт', 'Скопировано!');
             });
 
-            $('#copyLyricsBtn').on('click', function() {
+            $(document).on('click', '#copyLyricsBtn', function() {
                 const text = $('#modalLyricsText').val();
-                navigator.clipboard.writeText(text).then(function() {
-                    const btn = $('#copyLyricsBtn');
-                    btn.html('<i class="bi bi-check2 me-1"></i>Скопировано!');
-                    setTimeout(function() {
-                        btn.html('<i class="bi bi-clipboard me-1"></i>Копировать текст');
-                    }, 2000);
-                });
+                copyTextToClipboard(text, $(this), '<i class="bi bi-clipboard me-1"></i>Копировать текст', 'Скопировано!');
             });
 
-            $('#copyErrorBtn').on('click', function() {
+            $(document).on('click', '#copyErrorBtn', function() {
                 const text = $('#modalErrorText').text();
-                navigator.clipboard.writeText(text).then(function() {
-                    const btn = $('#copyErrorBtn');
-                    btn.html('<i class="bi bi-check2 me-1"></i>Скопировано!');
-                    setTimeout(function() {
-                        btn.html('<i class="bi bi-clipboard me-1"></i>Копировать ошибку');
-                    }, 2000);
-                });
+                copyTextToClipboard(text, $(this), '<i class="bi bi-clipboard me-1"></i>Копировать ошибку', 'Скопировано!');
             });
 
-            $('#copyRawBtn').on('click', function() {
+            $(document).on('click', '#copyRawBtn', function() {
                 const text = $('#modalRawText').val();
-                navigator.clipboard.writeText(text).then(function() {
-                    const btn = $('#copyRawBtn');
-                    btn.html('<i class="bi bi-check2 me-1"></i>Скопировано!');
-                    setTimeout(function() {
-                        btn.html('<i class="bi bi-clipboard me-1"></i>Копировать ответ API');
-                    }, 2000);
-                });
+                copyTextToClipboard(text, $(this), '<i class="bi bi-clipboard me-1"></i>Копировать ответ API', 'Скопировано!');
             });
         });
     </script>

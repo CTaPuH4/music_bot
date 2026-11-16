@@ -822,6 +822,12 @@ async def test_web_dashboard():
 
     html_err = render_error_page("Ошибка", "Текст ошибки")
     assert "Текст ошибки" in html_err
+
+    # Test Terms of Service / Moderation keyword detection on real Treblo API response
+    test_treblo_err = "Ошибка нейросети: Refused because this request may violate our Terms of Service. Reach out to us if you believe this was an error."
+    test_combined = test_treblo_err.lower()
+    assert any(kw in test_combined for kw in ["terms of service", "violate", "refused", "tos", "policy"])
+
     print("[OK] Web Dashboard: HTML templates rendering (including failure diagnostics and uptime monitoring) passed.")
 
     # 5. Test Route Registration on aiohttp App

@@ -1058,7 +1058,7 @@ async def execute_generation(
         if task_id:
             await db.update_generation_status(task_id, "FAILURE", error_message=err_msg, raw_response=raw_str)
 
-        # Detect moderation / NSFW / content policy violations
+        # Detect moderation / NSFW / content policy / Terms of Service violations
         combined_err = f"{err_msg} {raw_str}".lower()
         moderation_keywords = [
             "nsfw",
@@ -1073,6 +1073,21 @@ async def execute_generation(
             "content_violation",
             "profanity",
             "цензур",
+            "модерац",
+            "terms of service",
+            "terms",
+            "violate",
+            "refused",
+            "tos",
+            "guidelines",
+            "disallowed",
+            "unacceptable",
+            "banned",
+            "restricted",
+            "restriction",
+            "copyright",
+            "недопустим",
+            "наруш",
         ]
         is_moderation = any(kw in combined_err for kw in moderation_keywords)
 
@@ -1080,8 +1095,8 @@ async def execute_generation(
             fail_text = (
                 "⚠️ <b>Текст или промт не прошёл модерацию нейросети</b>\n\n"
                 "Сервис генерации отклонил запрос: в тексте песни или описании обнаружен "
-                "недопустимый контент (NSFW / ненормативная лексика / политика безопасности).\n\n"
-                "💡 <b>Что делать:</b> измените текст или тему трека и попробуйте снова.\n"
+                "недопустимый контент (NSFW / ненормативная лексика / нарушение правил сервиса).\n\n"
+                "💡 <b>Что делать:</b> измените слова песни или тему трека и попробуйте снова.\n"
                 "💰 <i>Потраченная попытка уже возвращена на ваш баланс.</i>"
             )
         else:
