@@ -4,9 +4,11 @@ import sys
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
+from aiogram.utils.backoff import BackoffConfig
 
 from config import settings
 from database.db import db
@@ -64,9 +66,11 @@ async def main() -> None:
     # Initialize SQLite database
     await db.init()
 
-    # Initialize bot and dispatcher
+    # Initialize bot and dispatcher with increased HTTP timeout (120s for media/audio uploads)
+    session = AiohttpSession(timeout=120.0)
     bot = Bot(
         token=settings.bot_token,
+        session=session,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dp = setup_dispatcher()
@@ -94,7 +98,12 @@ async def main() -> None:
     logger.info("Bot is starting polling...")
     try:
         await bot.delete_webhook(drop_pending_updates=True)
-        await dp.start_polling(bot)
+        await dp.start_polling(
+            bot,
+            polling_timeout=15,
+            allowed_updates=["message", "callback_query", "pre_checkout_query"],
+            backoff_config=BackoffConfig(min_delay=1.0, max_delay=3.5, factor=1.2, jitter=0.1),
+        )
     finally:
         if poller_task:
             poller_task.cancel()

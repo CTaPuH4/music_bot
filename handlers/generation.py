@@ -615,6 +615,16 @@ async def process_lyrics(message: Message, state: FSMContext) -> None:
         )
         return
 
+    MAX_LYRICS_CHARS = 2400
+    if len(lyrics_text) > MAX_LYRICS_CHARS:
+        await message.answer(
+            f"⚠️ <b>Текст песни слишком длинный</b> ({len(lyrics_text)} симв.)!\n\n"
+            f"Нейросеть поддерживает текст объёмом <b>до {MAX_LYRICS_CHARS} символов</b> (~1500 токенов, примерно 2-3 куплета и припев).\n\n"
+            "Пожалуйста, сократите текст (например, уберите повторы припевов или длинное аутро) и отправьте снова 👇",
+            parse_mode="HTML",
+        )
+        return
+
     # Short confirmation message of user's choice
     await message.answer("✍️ <b>Текст песни принят!</b>", parse_mode="HTML")
 
@@ -938,27 +948,8 @@ async def execute_generation(
             status="SUCCESS",
             audio_url=audio_url,
             duration=float(duration) if duration else None,
+            image_url=image_url,
         )
-
-        # Download audio and thumbnail
-        try:
-            await status_msg.edit_text("✨ Трек готов! Загружаю аудио в Telegram...")
-        except Exception:
-            pass
-
-        async with httpx.AsyncClient(timeout=60.0) as http_client:
-            audio_resp = await http_client.get(audio_url)
-            audio_resp.raise_for_status()
-            audio_bytes = audio_resp.content
-
-            thumb_bytes = None
-            if image_url:
-                try:
-                    img_resp = await http_client.get(image_url)
-                    if img_resp.status_code == 200:
-                        thumb_bytes = img_resp.content
-                except Exception as img_err:
-                    logger.warning("Failed to fetch thumbnail: %s", img_err)
 
         # Determine track title and authorship
         gen_lyrics = generation_result.get("lyrics") or lyrics
@@ -978,32 +969,101 @@ async def execute_generation(
         safe_title = re.sub(r'[\\/*?:"<>|]', "", track_title).strip()
         file_name = f"{safe_performer} - {safe_title}.mp3" if safe_title else f"{safe_performer}.mp3"
 
-        audio_file = BufferedInputFile(
-            audio_bytes, filename=file_name
-        )
-        thumb_file = (
-            BufferedInputFile(thumb_bytes, filename="cover.webp")
-            if thumb_bytes
-            else None
-        )
-
-        await bot.send_audio(
-            chat_id=chat_id,
-            audio=audio_file,
-            thumbnail=thumb_file,
-            title=track_title,
-            performer=performer_display,
-            duration=int(duration) if duration else None,
-            caption=display_caption,
-            reply_markup=get_after_generation_keyboard(),
-            parse_mode="HTML",
-        )
-
-        # Delete waiting message
+        # Download audio and thumbnail
         try:
-            await status_msg.delete()
+            await status_msg.edit_text("✨ Трек готов! Загружаю аудио в Telegram...")
         except Exception:
             pass
+
+        sent_audio = False
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as http_client:
+                audio_resp = await http_client.get(audio_url)
+                audio_resp.raise_for_status()
+                audio_bytes = audio_resp.content
+
+                thumb_bytes = None
+                if image_url:
+                    try:
+                        img_resp = await http_client.get(image_url)
+                        if img_resp.status_code == 200:
+                            thumb_bytes = img_resp.content
+                    except Exception as img_err:
+                        logger.warning("Failed to fetch thumbnail: %s", img_err)
+
+            # Send audio to user with increased timeout (180s) and patient retries if Telegram lags
+            max_send_attempts = 3
+            for attempt in range(max_send_attempts):
+                try:
+                    audio_file = BufferedInputFile(audio_bytes, filename=file_name)
+                    thumb_file = (
+                        BufferedInputFile(thumb_bytes, filename="cover.webp")
+                        if thumb_bytes
+                        else None
+                    )
+                    await bot.send_audio(
+                        chat_id=chat_id,
+                        audio=audio_file,
+                        thumbnail=thumb_file,
+                        title=track_title,
+                        performer=performer_display,
+                        duration=int(duration) if duration else None,
+                        caption=display_caption,
+                        reply_markup=get_after_generation_keyboard(),
+                        parse_mode="HTML",
+                        request_timeout=180,
+                    )
+                    sent_audio = True
+                    break
+                except Exception as send_err:
+                    logger.warning(
+                        "Attempt %s/%s to send_audio to Telegram failed: %s",
+                        attempt + 1,
+                        max_send_attempts,
+                        send_err,
+                    )
+                    if attempt == 0:
+                        try:
+                            await status_msg.edit_text(
+                                "⏳ <b>Сервера Telegram сейчас перегружены...</b>\n\n"
+                                "Ваш трек уже готов! Отправка аудиофайла занимает чуть дольше обычного.\n"
+                                "Пожалуйста, не закрывайте чат, продолжаем передачу трека...",
+                                parse_mode="HTML",
+                            )
+                        except Exception:
+                            pass
+                    if attempt < max_send_attempts - 1:
+                        await asyncio.sleep(4 + attempt * 4)
+        except Exception as dl_send_err:
+            logger.warning(
+                "Immediate audio download/delivery failed for task %s: %s",
+                task_id,
+                dl_send_err,
+            )
+
+        if sent_audio:
+            # Delete waiting message on success
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+        else:
+            # Telegram is lagging or timed out: enqueue for background delivery!
+            # CRITICAL: We do NOT refund credit because the track was already generated by Treblo!
+            logger.warning("Could not immediately upload audio to Telegram for task %s. Enqueued for background delivery.", task_id)
+            await db.mark_generation_pending_delivery(task_id)
+            try:
+                await status_msg.edit_text(
+                    f"🎶 <b>{html.escape(performer_display)} | {html.escape(track_title)}</b>\n\n"
+                    "✨ <b>Ваш трек успешно создан!</b>\n\n"
+                    "⏳ Сервера Telegram сейчас испытывают задержки при передаче файлов. "
+                    "Мы поставили ваш трек в приоритетную очередь доставки — бот автоматически пришлёт MP3 прямо в этот чат, как только связь с Telegram восстановится.\n\n"
+                    "<i>Баланс списан корректно, трек готов и обязательно придёт сюда.</i>",
+                    reply_markup=get_main_menu_keyboard(),
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
 
     except TrebloCreditsError as e:
         logger.error("Treblo credits error: %s", e)
@@ -1058,8 +1118,13 @@ async def execute_generation(
         if task_id:
             await db.update_generation_status(task_id, "FAILURE", error_message=err_msg, raw_response=raw_str)
 
-        # Detect moderation / NSFW / content policy / Terms of Service violations
+        # Detect specific API error types (Length limit, Moderation / NSFW / Terms of Service)
         combined_err = f"{err_msg} {raw_str}".lower()
+        is_too_long = any(
+            kw in combined_err
+            for kw in ["too long", "shorten", "max is", "tokens", "lyrics too long", "слишком длинн"]
+        )
+
         moderation_keywords = [
             "nsfw",
             "moderation",
@@ -1091,7 +1156,14 @@ async def execute_generation(
         ]
         is_moderation = any(kw in combined_err for kw in moderation_keywords)
 
-        if is_moderation:
+        if is_too_long:
+            fail_text = (
+                "⚠️ <b>Текст песни слишком длинный</b>\n\n"
+                "Нейросеть отклонила генерацию: превышен максимальный лимит длины текста (~1500 токенов).\n\n"
+                "💡 <b>Что делать:</b> сократите текст (например, уберите повторы припевов или лишние куплеты) и попробуйте снова.\n"
+                "💰 <i>Потраченная попытка уже возвращена на ваш баланс.</i>"
+            )
+        elif is_moderation:
             fail_text = (
                 "⚠️ <b>Текст или промт не прошёл модерацию нейросети</b>\n\n"
                 "Сервис генерации отклонил запрос: в тексте песни или описании обнаружен "

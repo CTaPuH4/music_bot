@@ -1036,8 +1036,14 @@ def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> 
         mode = '<span class="badge bg-secondary">Инструментал</span>' if g.get("instrumental") else '<span class="badge bg-dark border">С вокалом</span>'
 
         status = g.get("status") or ""
+        delivery_status = g.get("delivery_status") or "DELIVERED"
         if status == "SUCCESS":
-            status_badge = '<span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Готово</span>'
+            if delivery_status == "PENDING":
+                status_badge = '<span class="badge bg-warning text-dark"><i class="bi bi-clock-history me-1"></i>В очереди отправки</span>'
+            elif delivery_status == "FAILED":
+                status_badge = '<span class="badge bg-danger"><i class="bi bi-exclamation-triangle me-1"></i>Не доставлен (блок)</span>'
+            else:
+                status_badge = '<span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Готово</span>'
         elif status == "FAILURE":
             status_badge = f"""
             <div class="d-inline-flex align-items-center gap-1">

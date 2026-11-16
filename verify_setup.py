@@ -111,6 +111,23 @@ async def test_db():
     assert stats["success_generations"] == 1
     print("[OK] DB: Record generation and stats check passed.")
 
+    # Delayed Audio Delivery Queue check
+    await test_db_instance.mark_generation_pending_delivery("test-task-1")
+    pending_gens = await test_db_instance.get_pending_deliveries(limit=10)
+    assert len(pending_gens) == 1
+    assert pending_gens[0]["task_id"] == "test-task-1"
+    assert pending_gens[0]["delivery_status"] == "PENDING"
+
+    await test_db_instance.mark_generation_delivered("test-task-1")
+    pending_gens_after = await test_db_instance.get_pending_deliveries(limit=10)
+    assert len(pending_gens_after) == 0
+
+    await test_db_instance.mark_generation_pending_delivery("test-task-1")
+    await test_db_instance.mark_generation_delivery_failed("test-task-1", "User blocked bot")
+    pending_gens_failed = await test_db_instance.get_pending_deliveries(limit=10)
+    assert len(pending_gens_failed) == 0
+    print("[OK] DB: Delayed audio delivery queue & status transitions check passed.")
+
     # Payments check
     await test_db_instance.create_payment_record(
         payment_id="pay-12345",
