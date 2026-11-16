@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from typing import Optional
 from aiohttp import web
 from aiogram import Bot
@@ -9,6 +10,7 @@ from database.db import db
 from services.payment_service import process_successful_payment, process_canceled_payment
 from services.yookassa import yookassa_client
 from services.cryptobot import cryptobot_client
+from services.treblo import treblo_client
 
 logger = logging.getLogger(__name__)
 
@@ -121,16 +123,49 @@ async def background_payments_poller(bot: Bot) -> None:
     2. Periodically checks Treblo API balance and alerts admins if credits are low.
     """
     logger.info(
-        "Background poller started (payments interval: %s sec)",
+        "Background poller started (payments interval: %s sec, uptime interval: %s sec)",
         settings.background_poller_interval_sec,
+        settings.uptime_check_interval_sec,
     )
 
     last_treblo_check = 0.0
+    last_uptime_check = 0.0
+    last_cleanup_check = 0.0
 
     while True:
         try:
-            # Check Treblo API balance every 10 minutes (or on startup)
             now = asyncio.get_event_loop().time()
+
+            # Record health/uptime metrics for Bot and Treblo API (configurable interval, default 5 min)
+            if now - last_uptime_check >= settings.uptime_check_interval_sec or last_uptime_check == 0.0:
+                last_uptime_check = now
+                try:
+                    # 1. Record bot heartbeat
+                    await db.record_uptime_check("bot", "UP", latency_ms=0.0)
+
+                    # 2. Ping Treblo API and record latency
+                    t_start = time.perf_counter()
+                    bal_res = await treblo_client.get_account_balance()
+                    t_latency = round((time.perf_counter() - t_start) * 1000, 1)
+
+                    if isinstance(bal_res, dict) and "error" in bal_res and bal_res.get("status_code") != 200:
+                        err_msg = str(bal_res.get("error"))
+                        await db.record_uptime_check("treblo_api", "DOWN", latency_ms=t_latency, error_message=err_msg)
+                    else:
+                        await db.record_uptime_check("treblo_api", "UP", latency_ms=t_latency)
+                except Exception as up_exc:
+                    logger.debug("Uptime check error: %s", up_exc)
+                    await db.record_uptime_check("treblo_api", "DOWN", latency_ms=0.0, error_message=str(up_exc))
+
+            # Clean up old uptime logs older than 14 days (runs every 6 hours)
+            if now - last_cleanup_check >= 21600 or last_cleanup_check == 0.0:
+                last_cleanup_check = now
+                try:
+                    await db.cleanup_old_uptime_logs(days=14)
+                except Exception:
+                    pass
+
+            # Check Treblo API balance every 10 minutes (or on startup)
             if now - last_treblo_check > 600 or last_treblo_check == 0.0:
                 last_treblo_check = now
                 try:

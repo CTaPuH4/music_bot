@@ -19,6 +19,21 @@ logger = logging.getLogger(__name__)
 COOKIE_NAME = "trivela_admin_session"
 SESSION_MAX_AGE = 14 * 86400  # 14 days in seconds
 
+BOT_START_TIMESTAMP = time.time()
+
+
+def get_bot_uptime_str() -> str:
+    """Returns human-readable duration of current bot process execution."""
+    diff = int(time.time() - BOT_START_TIMESTAMP)
+    days = diff // 86400
+    hours = (diff % 86400) // 3600
+    mins = (diff % 3600) // 60
+    if days > 0:
+        return f"{days} дн. {hours} ч. {mins} мин."
+    if hours > 0:
+        return f"{hours} ч. {mins} мин."
+    return f"{max(1, mins)} мин."
+
 
 # ---------------------------------------------------------
 # AUTHENTICATION & SESSION HELPERS
@@ -197,6 +212,13 @@ def render_base_layout(
         audio {{
             filter: invert(1) hue-rotate(180deg);
         }}
+        #paymentStatusFilters .btn, #generationStatusFilters .btn {{
+            cursor: pointer;
+            transition: all 0.2s ease-in-out;
+        }}
+        #paymentStatusFilters .btn .badge, #generationStatusFilters .btn .badge {{
+            pointer-events: none;
+        }}
     </style>
 </head>
 <body>
@@ -290,8 +312,13 @@ def render_base_layout(
 """
 
 
-def render_dashboard_page(stats: Dict[str, Any], chart_data: Dict[str, Any], user_id: int) -> str:
-    """Renders the main dashboard page with KPI cards and 14-day interactive Chart.js charts."""
+def render_dashboard_page(
+    stats: Dict[str, Any],
+    chart_data: Dict[str, Any],
+    user_id: int,
+    uptime_metrics: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Renders the main dashboard page with KPI cards, 14-day financial charts, and 24-hour service uptime monitoring."""
     rev_total = f"{stats.get('revenue_total', 0):,.0f} ₽".replace(",", " ")
     rev_today = f"{stats.get('revenue_today', 0):,.0f} ₽".replace(",", " ")
     rev_7d = f"{stats.get('revenue_7d', 0):,.0f} ₽".replace(",", " ")
@@ -312,6 +339,45 @@ def render_dashboard_page(stats: Dict[str, Any], chart_data: Dict[str, Any], use
     users_today = stats.get("users_today", 0)
     buyers_total = stats.get("buyers_total", 0)
     conversion_rate = stats.get("conversion_rate", 0.0)
+
+    # Uptime metrics calculations
+    uptime = uptime_metrics or {}
+    bot_up_pct = uptime.get("bot_uptime_24h_pct", 100.0)
+    bot_duration_str = get_bot_uptime_str()
+
+    treblo_status = uptime.get("treblo_status", "UP")
+    treblo_lat = uptime.get("treblo_last_latency", 0.0)
+    treblo_avg_lat = uptime.get("treblo_avg_latency_24h", 0.0)
+    treblo_24h_pct = uptime.get("treblo_uptime_24h_pct", 100.0)
+    treblo_7d_pct = uptime.get("treblo_uptime_7d_pct", 100.0)
+
+    treblo_badge_class = "bg-success" if treblo_status == "UP" else "bg-danger"
+    treblo_badge_icon = '<i class="bi bi-check-circle me-1"></i>' if treblo_status == "UP" else '<i class="bi bi-exclamation-triangle me-1"></i>'
+    treblo_status_label = "Онлайн (200 OK)" if treblo_status == "UP" else "Сбой"
+    treblo_lat_str = f"{treblo_lat:g} мс" if treblo_lat > 0 else "—"
+    treblo_avg_lat_str = f"{treblo_avg_lat:g} мс" if treblo_avg_lat > 0 else "—"
+
+    # Status bars (24 hourly bars)
+    bars_data = uptime.get("hourly_bars", [])
+    status_bars_html = ""
+    for b in bars_data:
+        st = b.get("status", "none")
+        if st == "up":
+            bar_color = "#22c55e"
+            tooltip = f"Доступность 100%, отклик {b.get('latency', 0)} мс"
+        elif st == "partial":
+            bar_color = "#eab308"
+            tooltip = f"Доступность {b.get('uptime', 0)}%, отклик {b.get('latency', 0)} мс"
+        elif st == "down":
+            bar_color = "#ef4444"
+            tooltip = "Сбой / недоступность"
+        else:
+            bar_color = "#374151"
+            tooltip = "Мониторинг активен"
+        status_bars_html += f'<div class="flex-grow-1 rounded" style="background-color: {bar_color}; min-width: 4px; height: 26px;" title="{tooltip}"></div>'
+
+    hourly_labels_json = json.dumps(uptime.get("hourly_labels", []))
+    hourly_latency_json = json.dumps(uptime.get("hourly_treblo_latency", []))
 
     # JSON for charts
     labels_json = json.dumps(chart_data.get("labels", []))
@@ -433,6 +499,90 @@ def render_dashboard_page(stats: Dict[str, Any], chart_data: Dict[str, Any], use
         </div>
     </div>
 
+    <!-- SERVICE UPTIME & SYSTEM HEALTH MONITORING SECTION -->
+    <div class="card card-custom p-4 mb-4">
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+            <div>
+                <h5 class="card-title fw-bold mb-1">
+                    <i class="bi bi-activity text-success me-2"></i>Мониторинг доступности и Аптайм сервисов (24 часа)
+                </h5>
+                <p class="text-muted small mb-0">Непрерывное отслеживание статуса Telegram-бота и времени отклика нейросети Treblo API</p>
+            </div>
+            <div class="d-flex align-items-center gap-2">
+                <span class="badge bg-success-subtle text-success border border-success-subtle px-3 py-2">
+                    <i class="bi bi-shield-check me-1"></i>Все системы в норме
+                </span>
+            </div>
+        </div>
+
+        <!-- 2x Status Cards -->
+        <div class="row g-3 mb-4">
+            <!-- Bot Service Status -->
+            <div class="col-12 col-md-6">
+                <div class="p-3 rounded bg-dark border border-secondary h-100">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <div class="d-flex align-items-center gap-2">
+                            <span class="fs-4">🤖</span>
+                            <div>
+                                <div class="fw-bold text-white">Telegram Музыкальный Бот</div>
+                                <div class="text-muted small">Процесс бота и веб-сервер</div>
+                            </div>
+                        </div>
+                        <span class="badge bg-success text-white px-2 py-1"><i class="bi bi-check-circle me-1"></i>Онлайн</span>
+                    </div>
+                    <div class="d-flex flex-wrap justify-content-between text-muted small pt-2 border-top border-secondary">
+                        <div>Непрерывный аптайм: <strong class="text-white">{bot_duration_str}</strong></div>
+                        <div>Аптайм (24ч): <strong class="text-success">{bot_up_pct}%</strong></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Treblo API Service Status -->
+            <div class="col-12 col-md-6">
+                <div class="p-3 rounded bg-dark border border-secondary h-100">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <div class="d-flex align-items-center gap-2">
+                            <span class="fs-4">⚡</span>
+                            <div>
+                                <div class="fw-bold text-white">Treblo Melodia v3 API</div>
+                                <div class="text-muted small">Нейросеть генерации музыки</div>
+                            </div>
+                        </div>
+                        <span class="badge {treblo_badge_class} px-2 py-1">{treblo_badge_icon}{treblo_status_label}</span>
+                    </div>
+                    <div class="d-flex flex-wrap justify-content-between text-muted small pt-2 border-top border-secondary">
+                        <div>Текущий пинг: <strong class="text-info">{treblo_lat_str}</strong></div>
+                        <div>Ср. задержка: <strong class="text-white">{treblo_avg_lat_str}</strong></div>
+                        <div>Аптайм (24ч): <strong class="text-success">{treblo_24h_pct}%</strong></div>
+                        <div>7 дней: <strong class="text-white">{treblo_7d_pct}%</strong></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 24-HOUR STATUS BARS TIMELINE -->
+        <div class="mb-4">
+            <div class="d-flex justify-content-between align-items-center text-muted small mb-2">
+                <span><i class="bi bi-bar-chart-steps me-1"></i>Шкала доступности по часам:</span>
+                <span>24 часа назад &larr;&rarr; Сейчас</span>
+            </div>
+            <div class="d-flex gap-1" style="height: 26px;">
+                {status_bars_html}
+            </div>
+        </div>
+
+        <!-- LATENCY CHART -->
+        <div>
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <span class="text-muted small fw-bold"><i class="bi bi-speedometer2 me-1 text-info"></i>График времени отклика Treblo API (мс за 24ч):</span>
+                <span class="badge bg-dark border border-secondary text-info">миллисекунды (мс)</span>
+            </div>
+            <div style="position: relative; height: 160px; width: 100%;">
+                <canvas id="uptimeChart"></canvas>
+            </div>
+        </div>
+    </div>
+
     <!-- SYSTEM STATUS STRIP -->
     <div class="card card-custom p-3">
         <div class="row align-items-center text-center text-md-start g-3">
@@ -548,6 +698,66 @@ def render_dashboard_page(stats: Dict[str, Any], chart_data: Dict[str, Any], use
                 }}
             }}
         }});
+
+        // Treblo API Latency Chart (Gradient Line)
+        const ctxUptime = document.getElementById('uptimeChart');
+        if (ctxUptime) {{
+            const ctxUp = ctxUptime.getContext('2d');
+            const gradientUp = ctxUp.createLinearGradient(0, 0, 0, 160);
+            gradientUp.addColorStop(0, 'rgba(56, 189, 248, 0.35)');
+            gradientUp.addColorStop(1, 'rgba(56, 189, 248, 0.0)');
+
+            new Chart(ctxUp, {{
+                type: 'line',
+                data: {{
+                    labels: {hourly_labels_json},
+                    datasets: [{{
+                        label: 'Задержка отклика (мс)',
+                        data: {hourly_latency_json},
+                        borderColor: '#38bdf8',
+                        backgroundColor: gradientUp,
+                        borderWidth: 2,
+                        pointBackgroundColor: '#38bdf8',
+                        pointRadius: 2.5,
+                        pointHoverRadius: 5,
+                        fill: true,
+                        tension: 0.3
+                    }}]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {{
+                        legend: {{ display: false }},
+                        tooltip: {{
+                            callbacks: {{
+                                label: function(context) {{
+                                    return 'Отклик: ' + context.parsed.y + ' мс';
+                                }}
+                            }}
+                        }}
+                    }},
+                    scales: {{
+                        y: {{
+                            beginAtZero: true,
+                            grid: {{ color: '#1f2937' }},
+                            ticks: {{
+                                color: '#9ca3af',
+                                callback: function(val) {{ return val + ' мс'; }}
+                            }}
+                        }},
+                        x: {{
+                            grid: {{ display: false }},
+                            ticks: {{
+                                color: '#9ca3af',
+                                maxTicksLimit: 12,
+                                maxRotation: 0
+                            }}
+                        }}
+                    }}
+                }}
+            }});
+        }}
     </script>
     """
 
@@ -602,11 +812,11 @@ def render_payments_page(payments: List[Dict[str, Any]], user_id: int) -> str:
 
         rows_html += f"""
         <tr data-status="{status}">
-            <td class="text-muted fw-bold">#{pid}</td>
-            <td>{date_str}</td>
+            <td class="text-muted fw-bold" data-order="{pid}">#{pid}</td>
+            <td data-order="{created_at}">{date_str}</td>
             <td>{user_info}</td>
-            <td class="fw-bold text-success">{amount}</td>
-            <td><span class="badge bg-dark border border-secondary">{credits} треков</span></td>
+            <td class="fw-bold text-success" data-order="{p.get('amount', 0)}">{amount}</td>
+            <td data-order="{p.get('credits', 0)}"><span class="badge bg-dark border border-secondary">{credits} треков</span></td>
             <td>{promo}</td>
             <td>{status_badge}</td>
             <td>{prov_badge}<code class="text-muted" style="font-size: 0.75rem;" title="{html.escape(yk_id)}">{html.escape(yk_short)}</code></td>
@@ -683,11 +893,17 @@ def render_payments_page(payments: List[Dict[str, Any]], user_id: int) -> str:
         $(document).ready(function() {
             let currentPaymentFilter = 'hide-canceled';
 
-            // Custom DataTables filter for status
+            // Custom DataTables filter for status (uses DataTables row node directly without referencing uninitialized instance)
             $.fn.dataTable.ext.search.push(function(settings, data, dataIndex) {
                 if (settings.nTable.id !== 'paymentsTable') return true;
-                const row = paymentsTableInstance.row(dataIndex).node();
-                const status = $(row).attr('data-status');
+                const tr = settings.aoData && settings.aoData[dataIndex] ? settings.aoData[dataIndex].nTr : null;
+                let status = tr ? ($(tr).attr('data-status') || '') : '';
+                if (!status && data && data[6]) {
+                    const statusText = data[6];
+                    if (statusText.indexOf('Оплачен') !== -1) status = 'succeeded';
+                    else if (statusText.indexOf('Ожидает') !== -1) status = 'pending';
+                    else if (statusText.indexOf('Отменён') !== -1) status = 'canceled';
+                }
                 if (currentPaymentFilter === 'all') return true;
                 if (currentPaymentFilter === 'hide-canceled') return status !== 'canceled';
                 return status === currentPaymentFilter;
@@ -695,23 +911,33 @@ def render_payments_page(payments: List[Dict[str, Any]], user_id: int) -> str:
 
             const paymentsTableInstance = $('#paymentsTable').DataTable({
                 order: [[0, 'desc']],
+                columnDefs: [
+                    { targets: 0, type: 'num' },
+                    { targets: 3, type: 'num' },
+                    { targets: 4, type: 'num' }
+                ],
                 pageLength: 25,
                 language: ruDataTablesLang
             });
 
             function updateCounter() {
-                const count = paymentsTableInstance.rows({ filter: 'applied' }).count();
-                $('#filteredCount').text(count);
-                $('#csvExportBtn').attr('href', '/payments/export.csv?filter=' + currentPaymentFilter);
+                try {
+                    const count = paymentsTableInstance.rows({ filter: 'applied' }).count();
+                    $('#filteredCount').text(count);
+                    $('#csvExportBtn').attr('href', '/payments/export.csv?filter=' + encodeURIComponent(currentPaymentFilter));
+                } catch (err) {
+                    console.error('Counter update error:', err);
+                }
             }
 
             paymentsTableInstance.on('draw', updateCounter);
             updateCounter();
 
-            $('#paymentStatusFilters button').on('click', function() {
+            $(document).on('click', '#paymentStatusFilters button', function(e) {
+                e.preventDefault();
                 $('#paymentStatusFilters button').removeClass('active');
                 $(this).addClass('active');
-                currentPaymentFilter = $(this).data('filter');
+                currentPaymentFilter = $(this).attr('data-filter') || 'hide-canceled';
                 paymentsTableInstance.draw();
             });
         });
@@ -722,7 +948,11 @@ def render_payments_page(payments: List[Dict[str, Any]], user_id: int) -> str:
 
 
 def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> str:
-    """Renders the generations history page with full prompt viewing modal and inline audio players."""
+    """Renders the generations history page with status filtering, error diagnostics modal, full prompt viewing, and inline audio players."""
+    count_all = len(generations)
+    count_success = sum(1 for g in generations if g.get("status") == "SUCCESS")
+    count_failure = sum(1 for g in generations if g.get("status") == "FAILURE")
+
     rows_html = ""
     for g in generations:
         gid = g.get("id")
@@ -761,6 +991,11 @@ def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> 
         else:
             prompt_short = html.escape(prompt_clean) or "—"
 
+        err_msg = g.get("error_message") or ""
+        raw_resp = g.get("raw_response") or ""
+        err_msg_escaped = html.escape(err_msg)
+        raw_resp_escaped = html.escape(raw_resp)
+
         is_expandable = len(raw_prompt) > 48 or bool(raw_lyrics.strip())
 
         if is_expandable:
@@ -784,6 +1019,15 @@ def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> 
             prompt_cell = f"""
             <div class="d-flex align-items-center justify-content-between gap-1">
                 <span>{prompt_short}</span>
+                <button type="button" class="btn btn-sm btn-outline-secondary px-2 py-0 view-prompt-btn" style="font-size: 0.72rem; white-space: nowrap;"
+                        data-bs-toggle="modal" data-bs-target="#promptModal"
+                        data-gid="{gid}"
+                        data-artist="{artist_escaped}"
+                        data-genres="{genres_escaped}"
+                        data-date="{date_str}"
+                        data-user="{uname}">
+                    <i class="bi bi-eye me-1"></i>Инфо
+                </button>
                 <div class="d-none full-prompt-data">{prompt_escaped}</div>
                 <div class="d-none full-lyrics-data">{lyrics_escaped}</div>
             </div>
@@ -795,7 +1039,26 @@ def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> 
         if status == "SUCCESS":
             status_badge = '<span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Готово</span>'
         elif status == "FAILURE":
-            status_badge = '<span class="badge bg-danger"><i class="bi bi-x-circle me-1"></i>Ошибка</span>'
+            err_short = html.escape(err_msg[:50] + "...") if len(err_msg) > 50 else err_msg_escaped
+            err_hint = f'<div class="text-danger small mt-1 font-monospace" style="font-size: 0.72rem; max-width: 170px; word-break: break-word;" title="{err_msg_escaped}">{err_short}</div>' if err_msg else ''
+            status_badge = f"""
+            <div class="d-inline-flex flex-column align-items-start">
+                <div class="d-flex align-items-center gap-1">
+                    <span class="badge bg-danger"><i class="bi bi-x-circle me-1"></i>Ошибка</span>
+                    <button type="button" class="btn btn-sm btn-outline-danger px-1 py-0 view-prompt-btn" style="font-size: 0.70rem;"
+                            data-bs-toggle="modal" data-bs-target="#promptModal"
+                            data-gid="{gid}"
+                            data-artist="{artist_escaped}"
+                            data-genres="{genres_escaped}"
+                            data-date="{date_str}"
+                            data-user="{uname}"
+                            title="Посмотреть причину ошибки">
+                        <i class="bi bi-bug me-1"></i>Причина
+                    </button>
+                </div>
+                {err_hint}
+            </div>
+            """
         else:
             status_badge = f'<span class="badge bg-warning text-dark">{html.escape(status)}</span>'
 
@@ -811,23 +1074,50 @@ def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> 
             player_html = '<span class="text-muted">—</span>'
 
         rows_html += f"""
-        <tr>
-            <td class="text-muted fw-bold">#{gid}</td>
-            <td>{date_str}</td>
+        <tr data-status="{status}">
+            <td class="text-muted fw-bold" data-order="{gid}">#{gid}</td>
+            <td data-order="{created_at}">{date_str}</td>
             <td>{user_info}</td>
             <td>{style_info}</td>
             <td>{prompt_cell}</td>
             <td>{mode}</td>
-            <td>{status_badge}</td>
+            <td>
+                {status_badge}
+                <div class="d-none full-error-data">{err_msg_escaped}</div>
+                <div class="d-none full-raw-data">{raw_resp_escaped}</div>
+            </td>
             <td>{player_html}</td>
         </tr>
         """
 
     content = f"""
-    <div class="d-flex justify-content-between align-items-center mb-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
         <div>
             <h2 class="h3 fw-bold mb-1">История генераций</h2>
-            <p class="text-muted mb-0">Все созданные композиции с возможностью прослушивания треков и просмотра полных промтов</p>
+            <p class="text-muted mb-0">Все созданные композиции с возможностью прослушивания треков, просмотра полных промтов и диагностики ошибок</p>
+        </div>
+    </div>
+
+    <!-- STATUS FILTER BAR -->
+    <div class="card card-custom p-3 mb-3">
+        <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
+            <div class="d-flex align-items-center flex-wrap gap-2">
+                <span class="text-muted small fw-bold me-1"><i class="bi bi-funnel me-1 text-primary"></i>Фильтр статуса:</span>
+                <div class="btn-group btn-group-sm" role="group" id="generationStatusFilters">
+                    <button type="button" class="btn btn-outline-secondary active" data-filter="all">
+                        Все треки <span class="badge bg-secondary ms-1">{count_all}</span>
+                    </button>
+                    <button type="button" class="btn btn-outline-success" data-filter="SUCCESS">
+                        <i class="bi bi-check-circle me-1"></i>Успешные <span class="badge bg-success-subtle text-success ms-1">{count_success}</span>
+                    </button>
+                    <button type="button" class="btn btn-outline-danger" data-filter="FAILURE">
+                        <i class="bi bi-exclamation-triangle me-1"></i>С ошибкой <span class="badge bg-danger-subtle text-danger ms-1">{count_failure}</span>
+                    </button>
+                </div>
+            </div>
+            <div class="text-muted small">
+                Показано: <span id="filteredGensCount" class="text-white fw-bold">{count_all}</span> из {count_all}
+            </div>
         </div>
     </div>
 
@@ -853,7 +1143,7 @@ def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> 
         </div>
     </div>
 
-    <!-- MODAL FOR FULL PROMPT & LYRICS -->
+    <!-- MODAL FOR FULL PROMPT, LYRICS & ERROR DIAGNOSTICS -->
     <div class="modal fade" id="promptModal" tabindex="-1" aria-labelledby="promptModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered modal-lg">
             <div class="modal-content card-custom border-secondary" style="background-color: #111827;">
@@ -873,6 +1163,31 @@ def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> 
                         </div>
                         <div class="col-12 col-md-4">
                             <span class="text-muted">Стиль / Артист:</span> <span id="modalMetaStyle" class="fw-medium text-white"></span>
+                        </div>
+                    </div>
+
+                    <!-- ERROR REASON & RAW API SECTION (for failed generations) -->
+                    <div class="mb-3 p-3 rounded border border-danger-subtle" id="modalErrorContainer" style="display: none; background-color: rgba(220, 38, 38, 0.08);">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <label class="form-label text-danger small fw-bold mb-0">
+                                <i class="bi bi-exclamation-triangle-fill me-1"></i>ПРИЧИНА ОШИБКИ:
+                            </label>
+                            <button class="btn btn-sm btn-outline-danger py-0 px-2" id="copyErrorBtn" style="font-size: 0.75rem;">
+                                <i class="bi bi-clipboard me-1"></i>Копировать ошибку
+                            </button>
+                        </div>
+                        <div id="modalErrorText" class="text-light mb-3 small font-monospace p-2 rounded bg-dark border border-secondary" style="word-break: break-word; white-space: pre-wrap;"></div>
+
+                        <div id="modalRawSection" style="display: none;">
+                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                <label class="form-label text-muted small fw-bold mb-0">
+                                    <i class="bi bi-code-slash me-1"></i>ПОЛНЫЙ ОТВЕТ API / ТРЕЙСБЕК:
+                                </label>
+                                <button class="btn btn-sm btn-outline-secondary py-0 px-2" id="copyRawBtn" style="font-size: 0.75rem;">
+                                    <i class="bi bi-clipboard me-1"></i>Копировать ответ API
+                                </button>
+                            </div>
+                            <textarea id="modalRawText" class="form-control text-light font-monospace" rows="6" readonly style="background-color: #0b0f19; border-color: #374151; font-size: 0.8rem; line-height: 1.4;"></textarea>
                         </div>
                     </div>
 
@@ -907,10 +1222,49 @@ def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> 
     extra_scripts = """
     <script>
         $(document).ready(function() {
-            $('#generationsTable').DataTable({
+            let currentGenFilter = 'all';
+
+            // Custom DataTables filter for generation status (uses aoData to avoid uninitialized variable ReferenceError)
+            $.fn.dataTable.ext.search.push(function(settings, data, dataIndex) {
+                if (settings.nTable.id !== 'generationsTable') return true;
+                const tr = settings.aoData && settings.aoData[dataIndex] ? settings.aoData[dataIndex].nTr : null;
+                let status = tr ? ($(tr).attr('data-status') || '') : '';
+                if (!status && data && data[6]) {
+                    const statusText = data[6];
+                    if (statusText.indexOf('Готово') !== -1) status = 'SUCCESS';
+                    else if (statusText.indexOf('Ошибка') !== -1) status = 'FAILURE';
+                }
+                if (currentGenFilter === 'all') return true;
+                return status === currentGenFilter;
+            });
+
+            const generationsTableInstance = $('#generationsTable').DataTable({
                 order: [[0, 'desc']],
+                columnDefs: [
+                    { targets: 0, type: 'num' }
+                ],
                 pageLength: 25,
                 language: ruDataTablesLang
+            });
+
+            function updateGensCounter() {
+                try {
+                    const count = generationsTableInstance.rows({ filter: 'applied' }).count();
+                    $('#filteredGensCount').text(count);
+                } catch (err) {
+                    console.error('Gens counter update error:', err);
+                }
+            }
+
+            generationsTableInstance.on('draw', updateGensCounter);
+            updateGensCounter();
+
+            $(document).on('click', '#generationStatusFilters button', function(e) {
+                e.preventDefault();
+                $('#generationStatusFilters button').removeClass('active');
+                $(this).addClass('active');
+                currentGenFilter = $(this).attr('data-filter') || 'all';
+                generationsTableInstance.draw();
             });
 
             // Modal opener handler
@@ -925,6 +1279,8 @@ def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> 
                 const tr = btn.closest('tr');
                 const promptText = tr.find('.full-prompt-data').text();
                 const lyricsText = tr.find('.full-lyrics-data').text();
+                const errorText = tr.find('.full-error-data').text();
+                const rawText = tr.find('.full-raw-data').text();
 
                 $('#modalGid').text('#' + gid);
                 $('#modalDate').text(date);
@@ -942,6 +1298,21 @@ def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> 
                     $('#modalLyricsText').val(lyricsText);
                 } else {
                     $('#modalLyricsContainer').hide();
+                }
+
+                // Error diagnostics
+                if (errorText && errorText.trim() !== '') {
+                    $('#modalErrorContainer').show();
+                    $('#modalErrorText').text(errorText);
+                    if (rawText && rawText.trim() !== '') {
+                        $('#modalRawSection').show();
+                        $('#modalRawText').val(rawText);
+                    } else {
+                        $('#modalRawSection').hide();
+                    }
+                } else {
+                    $('#modalErrorContainer').hide();
+                    $('#modalRawSection').hide();
                 }
             });
 
@@ -964,6 +1335,28 @@ def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> 
                     btn.html('<i class="bi bi-check2 me-1"></i>Скопировано!');
                     setTimeout(function() {
                         btn.html('<i class="bi bi-clipboard me-1"></i>Копировать текст');
+                    }, 2000);
+                });
+            });
+
+            $('#copyErrorBtn').on('click', function() {
+                const text = $('#modalErrorText').text();
+                navigator.clipboard.writeText(text).then(function() {
+                    const btn = $('#copyErrorBtn');
+                    btn.html('<i class="bi bi-check2 me-1"></i>Скопировано!');
+                    setTimeout(function() {
+                        btn.html('<i class="bi bi-clipboard me-1"></i>Копировать ошибку');
+                    }, 2000);
+                });
+            });
+
+            $('#copyRawBtn').on('click', function() {
+                const text = $('#modalRawText').val();
+                navigator.clipboard.writeText(text).then(function() {
+                    const btn = $('#copyRawBtn');
+                    btn.html('<i class="bi bi-check2 me-1"></i>Скопировано!');
+                    setTimeout(function() {
+                        btn.html('<i class="bi bi-clipboard me-1"></i>Копировать ответ API');
                     }, 2000);
                 });
             });
@@ -1002,15 +1395,15 @@ def render_users_page(users: List[Dict[str, Any]], user_id: int) -> str:
 
         rows_html += f"""
         <tr>
-            <td class="text-muted"><code>{uid}</code></td>
+            <td class="text-muted" data-order="{uid}"><code>{uid}</code></td>
             <td>{user_info}</td>
-            <td><strong class="text-white">{paid_bal}</strong> <span class="text-muted">плат.</span></td>
-            <td><span class="text-warning">{gift_bal}</span> <span class="text-muted">под.</span></td>
-            <td><span class="text-info">{ref_bal}</span> <span class="text-muted">реф.</span></td>
-            <td>{spent_badge}</td>
-            <td>{orders_badge}</td>
-            <td>{gens_badge}</td>
-            <td class="text-muted">{date_str}</td>
+            <td data-order="{paid_bal}"><strong class="text-white">{paid_bal}</strong> <span class="text-muted">плат.</span></td>
+            <td data-order="{gift_bal}"><span class="text-warning">{gift_bal}</span> <span class="text-muted">под.</span></td>
+            <td data-order="{ref_bal}"><span class="text-info">{ref_bal}</span> <span class="text-muted">реф.</span></td>
+            <td data-order="{total_spent}">{spent_badge}</td>
+            <td data-order="{orders}">{orders_badge}</td>
+            <td data-order="{gens}">{gens_badge}</td>
+            <td class="text-muted" data-order="{created_at}">{date_str}</td>
         </tr>
         """
 
@@ -1051,6 +1444,15 @@ def render_users_page(users: List[Dict[str, Any]], user_id: int) -> str:
         $(document).ready(function() {
             $('#usersTable').DataTable({
                 order: [[5, 'desc']], // Order by total_spent descending
+                columnDefs: [
+                    { targets: 0, type: 'num' },
+                    { targets: 2, type: 'num' },
+                    { targets: 3, type: 'num' },
+                    { targets: 4, type: 'num' },
+                    { targets: 5, type: 'num' },
+                    { targets: 6, type: 'num' },
+                    { targets: 7, type: 'num' }
+                ],
                 pageLength: 25,
                 language: ruDataTablesLang
             });
@@ -1195,8 +1597,9 @@ async def handle_dashboard(request: web.Request) -> web.Response:
 
     stats = await db.get_detailed_dashboard_stats()
     chart_data = await db.get_daily_chart_data(days=14)
+    uptime_metrics = await db.get_uptime_metrics(hours=24)
 
-    html_content = render_dashboard_page(stats, chart_data, user_id)
+    html_content = render_dashboard_page(stats, chart_data, user_id, uptime_metrics=uptime_metrics)
     return web.Response(text=html_content, content_type="text/html")
 
 

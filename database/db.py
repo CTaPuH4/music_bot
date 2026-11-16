@@ -223,6 +223,29 @@ class Database:
             except Exception:
                 pass
 
+            try:
+                await db.execute("ALTER TABLE generations ADD COLUMN error_message TEXT")
+            except Exception:
+                pass
+
+            try:
+                await db.execute("ALTER TABLE generations ADD COLUMN raw_response TEXT")
+            except Exception:
+                pass
+
+            # Uptime & Health logs table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS uptime_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    service TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    latency_ms REAL DEFAULT 0.0,
+                    error_message TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_uptime_service_created ON uptime_logs (service, created_at)")
+
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS payments (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -646,14 +669,23 @@ class Database:
         genres: Optional[str] = None,
         instrumental: bool = False,
         lyrics: Optional[str] = None,
+        status: str = "PENDING",
+        error_message: Optional[str] = None,
+        raw_response: Optional[str] = None,
     ) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
-                INSERT INTO generations (user_id, task_id, prompt, artist, genres, instrumental, lyrics, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING')
+                INSERT INTO generations (
+                    user_id, task_id, prompt, artist, genres,
+                    instrumental, lyrics, status, error_message, raw_response
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (user_id, task_id, prompt, artist, genres, int(instrumental), lyrics),
+                (
+                    user_id, task_id, prompt, artist, genres,
+                    int(instrumental), lyrics, status, error_message, raw_response
+                ),
             )
             await db.commit()
 
@@ -663,15 +695,21 @@ class Database:
         status: str,
         audio_url: Optional[str] = None,
         duration: Optional[float] = None,
+        error_message: Optional[str] = None,
+        raw_response: Optional[str] = None,
     ) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
                 UPDATE generations
-                SET status = ?, audio_url = coalesce(?, audio_url), duration = coalesce(?, duration)
+                SET status = ?,
+                    audio_url = coalesce(?, audio_url),
+                    duration = coalesce(?, duration),
+                    error_message = coalesce(?, error_message),
+                    raw_response = coalesce(?, raw_response)
                 WHERE task_id = ?
                 """,
-                (status, audio_url, duration, task_id),
+                (status, audio_url, duration, error_message, raw_response, task_id),
             )
             await db.commit()
 
@@ -1681,6 +1719,7 @@ class Database:
                 SELECT
                     g.id, g.task_id, g.user_id, g.prompt, g.artist, g.genres,
                     g.instrumental, g.lyrics, g.status, g.audio_url, g.duration, g.created_at,
+                    g.error_message, g.raw_response,
                     u.username, u.first_name
                 FROM generations g
                 LEFT JOIN users u ON g.user_id = u.user_id
@@ -1719,6 +1758,205 @@ class Database:
                     d["total_balance"] = (d.get("paid_balance") or 0) + (d.get("gift_balance") or 0)
                     res.append(d)
                 return res
+
+    async def record_uptime_check(
+        self,
+        service: str,
+        status: str,
+        latency_ms: float = 0.0,
+        error_message: Optional[str] = None,
+    ) -> None:
+        """Records an uptime health check result for bot or treblo_api."""
+        if service in ("treblo", "treblo_api"):
+            service = "treblo_api"
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO uptime_logs (service, status, latency_ms, error_message)
+                VALUES (?, ?, ?, ?)
+                """,
+                (service, status.upper(), latency_ms, error_message),
+            )
+            await db.commit()
+
+    async def get_uptime_metrics(self, hours: int = 24) -> Dict[str, Any]:
+        """
+        Calculates uptime and latency metrics for Bot and Treblo API over the last `hours`.
+        Returns summary metrics and hourly chart data.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+
+            # 1. Bot Uptime (last 24 hours)
+            async with db.execute(
+                """
+                SELECT
+                    count(*) as total,
+                    coalesce(sum(case when status = 'UP' then 1 else 0 end), 0) as up_count
+                FROM uptime_logs
+                WHERE service = 'bot' AND created_at >= datetime('now', ? || ' hours')
+                """,
+                (f"-{hours}",),
+            ) as cursor:
+                row = await cursor.fetchone()
+                bot_total = row["total"] if row else 0
+                bot_up = row["up_count"] if row else 0
+                bot_pct = round((bot_up / bot_total * 100), 1) if bot_total > 0 else 100.0
+
+            # 2. Treblo API Uptime & Latency (last 24 hours)
+            async with db.execute(
+                """
+                SELECT
+                    count(*) as total,
+                    coalesce(sum(case when status = 'UP' then 1 else 0 end), 0) as up_count,
+                    coalesce(avg(case when status = 'UP' then latency_ms else null end), 0.0) as avg_latency
+                FROM uptime_logs
+                WHERE service IN ('treblo_api', 'treblo') AND created_at >= datetime('now', ? || ' hours')
+                """,
+                (f"-{hours}",),
+            ) as cursor:
+                row = await cursor.fetchone()
+                treblo_total = row["total"] if row else 0
+                treblo_up = row["up_count"] if row else 0
+                treblo_pct = round((treblo_up / treblo_total * 100), 1) if treblo_total > 0 else 100.0
+                treblo_avg_lat = round(row["avg_latency"] if row else 0.0, 1)
+
+            # 3. Treblo 7-day Uptime
+            async with db.execute(
+                """
+                SELECT
+                    count(*) as total,
+                    coalesce(sum(case when status = 'UP' then 1 else 0 end), 0) as up_count
+                FROM uptime_logs
+                WHERE service IN ('treblo_api', 'treblo') AND created_at >= datetime('now', '-7 days')
+                """
+            ) as cursor:
+                row = await cursor.fetchone()
+                t7_total = row["total"] if row else 0
+                t7_up = row["up_count"] if row else 0
+                treblo_7d_pct = round((t7_up / t7_total * 100), 1) if t7_total > 0 else 100.0
+
+            # 4. Latest check for Treblo API
+            async with db.execute(
+                """
+                SELECT status, latency_ms, error_message, created_at
+                FROM uptime_logs
+                WHERE service IN ('treblo_api', 'treblo')
+                ORDER BY id DESC LIMIT 1
+                """
+            ) as cursor:
+                last_row = await cursor.fetchone()
+                if last_row:
+                    treblo_current_status = last_row["status"]
+                    treblo_current_latency = round(last_row["latency_ms"], 1)
+                    treblo_last_error = last_row["error_message"]
+                    treblo_last_check = last_row["created_at"]
+                else:
+                    treblo_current_status = "UP"
+                    treblo_current_latency = 0.0
+                    treblo_last_error = None
+                    treblo_last_check = None
+
+            # 5. Hourly series for Chart.js (last 24 hours)
+            async with db.execute(
+                """
+                SELECT
+                    strftime('%H:00', created_at) as hour_label,
+                    strftime('%Y-%m-%d %H', created_at) as hour_key,
+                    service,
+                    count(*) as total_checks,
+                    coalesce(sum(case when status = 'UP' then 1 else 0 end), 0) as up_checks,
+                    coalesce(avg(case when status = 'UP' then latency_ms else null end), 0.0) as avg_lat
+                FROM uptime_logs
+                WHERE created_at >= datetime('now', ? || ' hours')
+                GROUP BY hour_key, service
+                ORDER BY hour_key ASC
+                """,
+                (f"-{hours}",),
+            ) as cursor:
+                hourly_rows = await cursor.fetchall()
+
+            # Organize hourly data
+            from datetime import datetime, timedelta
+            now_dt = datetime.now()
+            slot_keys = []
+            slot_labels = []
+            for i in range(hours - 1, -1, -1):
+                slot_time = now_dt - timedelta(hours=i)
+                slot_keys.append(slot_time.strftime("%Y-%m-%d %H"))
+                slot_labels.append(slot_time.strftime("%H:00"))
+
+            treblo_by_hour = {}
+            bot_by_hour = {}
+            for r in hourly_rows:
+                hkey = r["hour_key"]
+                srv = r["service"]
+                tot = r["total_checks"]
+                up = r["up_checks"]
+                pct = round((up / tot * 100), 1) if tot > 0 else 100.0
+                if srv == "treblo_api":
+                    treblo_by_hour[hkey] = {
+                        "uptime": pct,
+                        "latency": round(r["avg_lat"], 1),
+                    }
+                elif srv == "bot":
+                    bot_by_hour[hkey] = {
+                        "uptime": pct,
+                    }
+
+            hourly_labels = slot_labels
+            hourly_treblo_latency = []
+            hourly_treblo_uptime = []
+            hourly_bot_uptime = []
+            hourly_bars = []
+
+            for k in slot_keys:
+                t_info = treblo_by_hour.get(k)
+                b_info = bot_by_hour.get(k)
+
+                t_lat = t_info["latency"] if t_info else 0.0
+                t_up = t_info["uptime"] if t_info else 100.0
+                b_up = b_info["uptime"] if b_info else 100.0
+
+                hourly_treblo_latency.append(t_lat)
+                hourly_treblo_uptime.append(t_up)
+                hourly_bot_uptime.append(b_up)
+
+                if t_info is None and b_info is None:
+                    hourly_bars.append({"status": "none", "label": "Нет данных", "latency": 0, "uptime": 100})
+                elif t_up >= 99.0 and b_up >= 99.0:
+                    hourly_bars.append({"status": "up", "latency": t_lat, "uptime": t_up})
+                elif t_up > 50.0 or b_up > 50.0:
+                    hourly_bars.append({"status": "partial", "latency": t_lat, "uptime": t_up})
+                else:
+                    hourly_bars.append({"status": "down", "latency": t_lat, "uptime": t_up})
+
+            return {
+                "bot_status": "UP",
+                "bot_uptime_24h_pct": bot_pct,
+                "treblo_status": treblo_current_status,
+                "treblo_last_latency": treblo_current_latency,
+                "treblo_avg_latency_24h": treblo_avg_lat,
+                "treblo_uptime_24h_pct": treblo_pct,
+                "treblo_uptime_7d_pct": treblo_7d_pct,
+                "treblo_last_error": treblo_last_error,
+                "treblo_last_check": treblo_last_check,
+                "hourly_labels": hourly_labels,
+                "hourly_treblo_latency": hourly_treblo_latency,
+                "hourly_treblo_uptime": hourly_treblo_uptime,
+                "hourly_bot_uptime": hourly_bot_uptime,
+                "hourly_bars": hourly_bars,
+            }
+
+    async def cleanup_old_uptime_logs(self, days: int = 14) -> int:
+        """Deletes uptime logs older than specified days."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM uptime_logs WHERE created_at < datetime('now', ? || ' days')",
+                (f"-{days}",),
+            )
+            await db.commit()
+            return cursor.rowcount
 
 
 db = Database()

@@ -11,7 +11,11 @@ logger = logging.getLogger(__name__)
 
 class TrebloAPIError(Exception):
     """Base exception for Treblo API errors."""
-    pass
+    def __init__(self, message: str, status_code: Optional[int] = None, raw_response: Any = None):
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+        self.raw_response = raw_response
 
 
 class TrebloCreditsError(TrebloAPIError):
@@ -74,11 +78,11 @@ class TrebloClient:
 
             if response.status_code == 401:
                 logger.error("Invalid API Key for generation service: %s", response.text)
-                raise TrebloAPIError("Ошибка авторизации сервиса генерации.")
+                raise TrebloAPIError("Ошибка авторизации сервиса генерации (401).", status_code=401, raw_response=response.text)
 
             if response.status_code == 402:
                 logger.error("Generation credits exhausted: %s", response.text)
-                raise TrebloCreditsError("Недостаточно кредитов сервиса генерации.")
+                raise TrebloCreditsError("Недостаточно кредитов сервиса генерации (402).", status_code=402, raw_response=response.text)
 
             # If service rejects arbitrary tags with 422, retry immediately without tags
             if response.status_code == 422 and "tags" in response.text.lower() and "tags" in payload:
@@ -96,14 +100,16 @@ class TrebloClient:
                 try:
                     err_json = response.json()
                     detail = err_json.get("detail") or err_json.get("message") or response.text
+                    raw_resp = err_json
                 except Exception:
                     detail = response.text
-                raise TrebloAPIError(f"Ошибка сервиса генерации ({response.status_code}): {detail}")
+                    raw_resp = response.text
+                raise TrebloAPIError(f"Ошибка сервиса генерации ({response.status_code}): {detail}", status_code=response.status_code, raw_response=raw_resp)
 
             data = response.json()
             task_id = data.get("task_id")
             if not task_id:
-                raise TrebloAPIError(f"В ответе сервиса отсутствует task_id: {data}")
+                raise TrebloAPIError(f"В ответе сервиса отсутствует task_id: {data}", raw_response=data)
 
             logger.info("Generation task created successfully: %s", task_id)
             return task_id
@@ -217,12 +223,26 @@ class TrebloClient:
             if status == "SUCCESS":
                 return await self.get_generation(task_id)
             elif status in ("FAILURE", "FAILED", "ERROR"):
-                raise TrebloAPIError("Генерация музыки завершилась ошибкой со стороны сервера нейросети.")
+                error_detail = "Генерация музыки завершилась ошибкой со стороны нейросети."
+                raw_resp = None
+                try:
+                    gen_info = await self.get_generation(task_id)
+                    raw_resp = gen_info
+                    if isinstance(gen_info, dict):
+                        err = gen_info.get("error") or gen_info.get("error_message") or gen_info.get("message") or gen_info.get("detail")
+                        if err:
+                            error_detail = f"Ошибка нейросети: {err}"
+                except Exception as fetch_err:
+                    raw_resp = f"Статус задачи: {status}. Не удалось получить данные ошибки: {fetch_err}"
+                raise TrebloAPIError(error_detail, raw_response=raw_resp)
 
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
 
-        raise TrebloTimeoutError(f"Превышено время ожидания генерации ({timeout} сек).")
+        raise TrebloTimeoutError(
+            f"Превышено время ожидания генерации ({timeout} сек).",
+            raw_response={"task_id": task_id, "timeout_sec": timeout, "elapsed_sec": elapsed, "last_status": last_status},
+        )
 
 
 treblo_client = TrebloClient()

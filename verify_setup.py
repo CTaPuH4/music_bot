@@ -717,11 +717,28 @@ async def test_web_dashboard():
     )
     await test_db.update_generation_status("task_web_1", "SUCCESS", audio_url="https://audio.example.com/track1.mp3")
 
+    # Add a failed generation with full error and raw response diagnostics
+    await test_db.record_generation(
+        user_id=55555,
+        task_id="task_fail_1",
+        prompt="explicit dark rap track",
+        artist="OG Buda",
+        genres="Трэп",
+        instrumental=False,
+    )
+    await test_db.update_generation_status(
+        "task_fail_1",
+        "FAILURE",
+        error_message="NSFW prompt detected and blocked by filter",
+        raw_response='{"error": "nsfw_content_violation", "status": 400, "detail": "Lyrics contain prohibited words"}',
+    )
+
     stats = await test_db.get_detailed_dashboard_stats()
     assert stats["revenue_total"] == 490.0
     assert stats["buyers_total"] == 1
-    assert stats["generations_total"] == 1
+    assert stats["generations_total"] == 2
     assert stats["generations_success"] == 1
+    assert stats["generations_failure"] == 1
     assert stats["avg_check"] == 490.0
 
     chart = await test_db.get_daily_chart_data(days=14)
@@ -730,36 +747,69 @@ async def test_web_dashboard():
     assert len(chart["revenue"]) == 14
     assert len(chart["generations"]) == 14
     assert sum(chart["revenue"]) == 490.0
-    assert sum(chart["generations"]) == 1
+    assert sum(chart["generations"]) == 2
+
+    # Uptime checks logging & metrics query
+    await test_db.record_uptime_check("bot", "UP", latency_ms=0.0)
+    await test_db.record_uptime_check("treblo", "UP", latency_ms=320.5)
+    await test_db.record_uptime_check("treblo", "UP", latency_ms=280.0)
+    await test_db.record_uptime_check("treblo", "DOWN", latency_ms=0.0, error_message="HTTP 502 Bad Gateway")
+
+    uptime_metrics = await test_db.get_uptime_metrics(hours=24)
+    assert uptime_metrics["bot_status"] == "UP"
+    assert uptime_metrics["bot_uptime_24h_pct"] == 100.0
+    assert uptime_metrics["treblo_status"] == "DOWN"
+    assert uptime_metrics["treblo_uptime_24h_pct"] == 66.7
+    assert len(uptime_metrics["hourly_bars"]) == 24
+    assert len(uptime_metrics["hourly_labels"]) == 24
+    assert len(uptime_metrics["hourly_treblo_latency"]) == 24
+
+    cleaned_uptime = await test_db.cleanup_old_uptime_logs(days=14)
+    assert cleaned_uptime >= 0
 
     payments = await test_db.get_all_payments_detailed(limit=10)
     assert len(payments) == 2
     assert payments[0]["user_id"] == 55555
 
     generations = await test_db.get_all_generations_detailed(limit=10)
-    assert len(generations) == 1
-    assert generations[0]["audio_url"] == "https://audio.example.com/track1.mp3"
+    assert len(generations) == 2
+    succ_gen = next(g for g in generations if g["task_id"] == "task_web_1")
+    fail_gen = next(g for g in generations if g["task_id"] == "task_fail_1")
+    assert succ_gen["audio_url"] == "https://audio.example.com/track1.mp3"
+    assert fail_gen["status"] == "FAILURE"
+    assert "NSFW prompt" in fail_gen["error_message"]
+    assert "nsfw_content_violation" in fail_gen["raw_response"]
 
     users = await test_db.get_all_users_detailed(limit=10)
     assert len(users) >= 2
     user_55555 = next(u for u in users if u["user_id"] == 55555)
     assert user_55555["total_spent"] == 490.0
     assert user_55555["successful_orders"] == 1
-    assert user_55555["total_generations"] == 1
+    assert user_55555["total_generations"] == 2
     print("[OK] Web Dashboard: Database analytics, charts, payments, and users queries passed.")
 
     # 4. Test HTML Template Rendering
-    html_dash = render_dashboard_page(stats, chart, admin_id)
+    html_dash = render_dashboard_page(stats, chart, admin_id, uptime_metrics=uptime_metrics)
     assert "Сводная аналитика" in html_dash
     assert "revenueChart" in html_dash
+    assert "uptimeChart" in html_dash
+    assert "Мониторинг доступности и Аптайм сервисов" in html_dash
+    assert "Treblo Melodia v3 API" in html_dash
 
     html_pay = render_payments_page(payments, admin_id)
     assert "История платежей" in html_pay
     assert "pay_succ_1" in html_pay
     assert "Оплачен" in html_pay
+    assert "paymentStatusFilters" in html_pay
 
     html_gens = render_generations_page(generations, admin_id)
     assert "История генераций" in html_gens
+    assert "generationStatusFilters" in html_gens
+    assert "modalErrorContainer" in html_gens
+    assert "copyErrorBtn" in html_gens
+    assert "copyRawBtn" in html_gens
+    assert "full-error-data" in html_gens
+    assert "NSFW prompt detected" in html_gens
     assert "https://audio.example.com/track1.mp3" in html_gens
     assert "<audio" in html_gens
 
@@ -772,7 +822,7 @@ async def test_web_dashboard():
 
     html_err = render_error_page("Ошибка", "Текст ошибки")
     assert "Текст ошибки" in html_err
-    print("[OK] Web Dashboard: HTML templates rendering passed.")
+    print("[OK] Web Dashboard: HTML templates rendering (including failure diagnostics and uptime monitoring) passed.")
 
     # 5. Test Route Registration on aiohttp App
     app = web.Application()

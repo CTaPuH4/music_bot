@@ -502,7 +502,7 @@ async def handle_pay_method_crypto(callback: CallbackQuery) -> None:
         f"📦 <b>Тариф:</b> {pack['title']}\n"
         f"⚡ <b>Количество:</b> +{pack['credits']} генераций\n"
         f"{discount_note}"
-        f"💰 <b>Сумма к оплате:</b> <b>{crypto_amount} USDT</b> <i>(~{int(final_price)} ₽ по курсу {settings.cryptobot_rub_rate})</i>\n\n"
+        f"💰 <b>Сумма к оплате:</b> <b>{crypto_amount} USDT</b> <i>(~{int(final_price)} ₽ по курсу {settings.cryptobot_rub_rate:g} ₽ за 1 USDT)</i>\n\n"
         "1️⃣ Нажмите <b>«💎 Оплатить в @CryptoBot»</b> и завершите перевод.\n"
         "<i>(Вы можете оплатить как с баланса @CryptoBot, так и переводом TON, USDT, BTC с любого кошелька)</i>.\n\n"
         "2️⃣ После оплаты нажмите <b>«🔄 Проверить оплату»</b>."

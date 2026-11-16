@@ -72,5 +72,8 @@ class Settings(BaseSettings):
     polling_interval_sec: float = 4.0
     generation_timeout_sec: int = 300
 
+    # Uptime & health monitoring (interval in seconds, default 300 = 5 minutes)
+    uptime_check_interval_sec: int = 300
+
 
 settings = Settings()

@@ -1,8 +1,11 @@
 import asyncio
 import html
 import io
+import json
 import logging
 import re
+import time
+import traceback
 from typing import Optional, List, Dict
 
 import httpx
@@ -731,6 +734,21 @@ async def handle_quick_prompt(message: Message, state: FSMContext) -> None:
 # ---------------------------------------------------------
 # EXECUTION: Treblo Melodia v3 Pipeline
 # ---------------------------------------------------------
+def _extract_error_details(err: Exception) -> tuple[str, str]:
+    err_msg = str(err)
+    raw = getattr(err, "raw_response", None)
+    if raw is None:
+        raw = traceback.format_exc()
+    elif isinstance(raw, (dict, list)):
+        try:
+            raw = json.dumps(raw, ensure_ascii=False, indent=2)
+        except Exception:
+            raw = str(raw)
+    else:
+        raw = str(raw)
+    return err_msg, raw
+
+
 async def execute_generation(
     bot: Bot,
     chat_id: int,
@@ -833,22 +851,39 @@ async def execute_generation(
         full_prompt = f"Жанры: {genre_tags_str}. {artist_clause}{prompt}".strip()
 
         # Create task in Treblo
-        task_id = await treblo_client.create_generation(
-            prompt=full_prompt,
-            instrumental=instrumental,
-            lyrics=lyrics,
-            tags=tags if tags else None,
-        )
-
-        await db.record_generation(
-            user_id=user_id,
-            task_id=task_id,
-            prompt=prompt,
-            artist=artist_name,
-            genres=genre_names_str,
-            instrumental=instrumental,
-            lyrics=lyrics,
-        )
+        try:
+            task_id = await treblo_client.create_generation(
+                prompt=full_prompt,
+                instrumental=instrumental,
+                lyrics=lyrics,
+                tags=tags if tags else None,
+            )
+            await db.record_generation(
+                user_id=user_id,
+                task_id=task_id,
+                prompt=prompt,
+                artist=artist_name,
+                genres=genre_names_str,
+                instrumental=instrumental,
+                lyrics=lyrics,
+                status="PENDING",
+            )
+        except Exception as create_exc:
+            fail_id = f"fail_{int(time.time())}_{user_id}"
+            err_msg, raw_str = _extract_error_details(create_exc)
+            await db.record_generation(
+                user_id=user_id,
+                task_id=fail_id,
+                prompt=prompt,
+                artist=artist_name,
+                genres=genre_names_str,
+                instrumental=instrumental,
+                lyrics=lyrics,
+                status="FAILURE",
+                error_message=err_msg,
+                raw_response=raw_str,
+            )
+            raise create_exc
 
         # Status update callback for polling
         async def on_status_update(new_status: str):
@@ -972,11 +1007,12 @@ async def execute_generation(
 
     except TrebloCreditsError as e:
         logger.error("Treblo credits error: %s", e)
+        err_msg, raw_str = _extract_error_details(e)
         # Refund credit
         if deducted_from:
             await db.refund_generation_credit(user_id, balance_type=deducted_from, cost=cost)
         if task_id:
-            await db.update_generation_status(task_id, "FAILURE")
+            await db.update_generation_status(task_id, "FAILURE", error_message=err_msg, raw_response=raw_str)
 
         # Alert admins
         try:
@@ -999,11 +1035,12 @@ async def execute_generation(
 
     except TrebloTimeoutError as e:
         logger.error("Generation timeout: %s", e)
+        err_msg, raw_str = _extract_error_details(e)
         # Refund credit
         if deducted_from:
             await db.refund_generation_credit(user_id, balance_type=deducted_from, cost=cost)
         if task_id:
-            await db.update_generation_status(task_id, "FAILURE")
+            await db.update_generation_status(task_id, "FAILURE", error_message=err_msg, raw_response=raw_str)
         await status_msg.edit_text(
             "⏱ <b>Время ожидания трека истекло.</b>\n"
             "Сервер перегружен или обрабатывает задачу слишком долго.\n"
@@ -1014,15 +1051,48 @@ async def execute_generation(
 
     except Exception as e:
         logger.exception("Unexpected generation error: %s", e)
+        err_msg, raw_str = _extract_error_details(e)
         # Refund credit
         if deducted_from:
             await db.refund_generation_credit(user_id, balance_type=deducted_from, cost=cost)
         if task_id:
-            await db.update_generation_status(task_id, "FAILURE")
+            await db.update_generation_status(task_id, "FAILURE", error_message=err_msg, raw_response=raw_str)
+
+        # Detect moderation / NSFW / content policy violations
+        combined_err = f"{err_msg} {raw_str}".lower()
+        moderation_keywords = [
+            "nsfw",
+            "moderation",
+            "sensitive",
+            "policy",
+            "safety",
+            "prohibited",
+            "flagged",
+            "explicit",
+            "inappropriate",
+            "content_violation",
+            "profanity",
+            "цензур",
+        ]
+        is_moderation = any(kw in combined_err for kw in moderation_keywords)
+
+        if is_moderation:
+            fail_text = (
+                "⚠️ <b>Текст или промт не прошёл модерацию нейросети</b>\n\n"
+                "Сервис генерации отклонил запрос: в тексте песни или описании обнаружен "
+                "недопустимый контент (NSFW / ненормативная лексика / политика безопасности).\n\n"
+                "💡 <b>Что делать:</b> измените текст или тему трека и попробуйте снова.\n"
+                "💰 <i>Потраченная попытка уже возвращена на ваш баланс.</i>"
+            )
+        else:
+            fail_text = (
+                "😔 <b>Не удалось создать трек</b>\n\n"
+                "Во время генерации произошла ошибка на стороне нейросети.\n"
+                "Потраченная попытка возвращена на ваш баланс. Попробуйте ещё раз или выберите другой стиль."
+            )
+
         await status_msg.edit_text(
-            "😔 <b>Не удалось создать трек</b>\n\n"
-            "Во время генерации произошла ошибка на стороне нейросети.\n"
-            "Потраченная попытка возвращена на ваш баланс. Попробуйте ещё раз или выберите другой стиль.",
+            fail_text,
             reply_markup=get_main_menu_keyboard(),
             parse_mode="HTML",
         )
