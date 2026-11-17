@@ -304,27 +304,29 @@ async def test_keyboards_and_catalogs():
     assert len(GENRES_CATALOG) >= 10
     kb = get_artists_keyboard()
     assert kb is not None
-    # Verify pagination: page 1 should have 12 artists (4 rows of 3)
+    # Verify popular artists keyboard: all 24 popular artists at once, no navigation arrows
     artist_buttons = [b for row in kb.inline_keyboard for b in row if b.callback_data.startswith("gen_artist:") and b.callback_data != "gen_artist:none"]
-    assert len(artist_buttons) == 12, f"Expected 12 artists on page 1, got {len(artist_buttons)}"
+    assert len(artist_buttons) == 24, f"Expected 24 popular artists, got {len(artist_buttons)}"
     nav_buttons = [b for row in kb.inline_keyboard for b in row if b.callback_data == "gen_art_noop"]
-    assert len(nav_buttons) == 1
-    assert "1/2" in nav_buttons[0].text
-    next_btn = [b for row in kb.inline_keyboard for b in row if b.callback_data == "gen_art_page:popular:2"]
-    assert len(next_btn) == 1
+    assert len(nav_buttons) == 0, "Popular keyboard should not have pagination arrows"
 
-    # Verify page 2
-    kb_p2 = get_artists_keyboard(page=2)
-    p2_artist_buttons = [b for row in kb_p2.inline_keyboard for b in row if b.callback_data.startswith("gen_artist:") and b.callback_data != "gen_artist:none"]
-    assert len(p2_artist_buttons) == 12
-    prev_btn = [b for row in kb_p2.inline_keyboard for b in row if b.callback_data == "gen_art_page:popular:1"]
-    assert len(prev_btn) == 1
-
-    # Verify all artists keyboard (tab="all")
+    # Verify all artists keyboard: paginated (12 artists per page, arrows)
     kb_all = get_all_artists_keyboard()
     all_artist_buttons = [b for row in kb_all.inline_keyboard for b in row if b.callback_data.startswith("gen_artist:") and b.callback_data != "gen_artist:none"]
-    assert len(all_artist_buttons) == 12
-    pop_switcher = [b for row in kb_all.inline_keyboard for b in row if b.callback_data == "gen_art_page:popular:1"]
+    assert len(all_artist_buttons) == 12, f"Expected 12 artists on page 1 of all artists, got {len(all_artist_buttons)}"
+    all_nav_buttons = [b for row in kb_all.inline_keyboard for b in row if b.callback_data == "gen_art_noop"]
+    assert len(all_nav_buttons) == 1
+    assert "1/3" in all_nav_buttons[0].text
+    next_btn = [b for row in kb_all.inline_keyboard for b in row if b.callback_data == "gen_art_page:all:2"]
+    assert len(next_btn) == 1
+
+    # Verify all artists page 2
+    kb_all_p2 = get_all_artists_keyboard(page=2)
+    p2_artist_buttons = [b for row in kb_all_p2.inline_keyboard for b in row if b.callback_data.startswith("gen_artist:") and b.callback_data != "gen_artist:none"]
+    assert len(p2_artist_buttons) == 12
+    prev_btn = [b for row in kb_all_p2.inline_keyboard for b in row if b.callback_data == "gen_art_page:all:1"]
+    assert len(prev_btn) == 1
+    pop_switcher = [b for row in kb_all_p2.inline_keyboard for b in row if b.callback_data == "gen_artists_popular"]
     assert len(pop_switcher) == 1
 
     genres_kb = get_genres_keyboard(["rock", "electronic"])

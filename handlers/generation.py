@@ -268,7 +268,7 @@ async def show_popular_artists(callback: CallbackQuery) -> None:
     popular_artists = await db.get_popular_artists()
     await callback.message.edit_text(
         text,
-        reply_markup=get_artists_keyboard(popular_artists, page=1, tab="popular"),
+        reply_markup=get_artists_keyboard(popular_artists),
         parse_mode="HTML",
     )
     await callback.answer()
@@ -281,7 +281,7 @@ async def process_artists_page_change(callback: CallbackQuery, state: FSMContext
         await state.set_state(GenerationStates.waiting_for_artist)
 
     parts = callback.data.split(":")
-    tab = parts[1] if len(parts) > 1 else "popular"
+    tab = parts[1] if len(parts) > 1 else "all"
     try:
         page = int(parts[2]) if len(parts) > 2 else 1
     except ValueError:
@@ -293,8 +293,8 @@ async def process_artists_page_change(callback: CallbackQuery, state: FSMContext
             "📋 <b>Все доступные артисты в базе:</b>\n\n"
             "Выбери исполнителя из расширенного списка ниже или отправь его имя сообщением в чат 👇"
         )
+        kb = get_all_artists_keyboard(artists=artists, page=page)
     else:
-        tab = "popular"
         artists = await db.get_popular_artists()
         text = (
             "🎤 <b>Шаг 1 — артист-референс</b>\n\n"
@@ -302,8 +302,8 @@ async def process_artists_page_change(callback: CallbackQuery, state: FSMContext
             "Можно вписать своего сообщением — если голосовой модели нет, бот подскажет.\n\n"
             "Или «⏭ Без артиста» — тогда стиль зададут только жанры."
         )
+        kb = get_artists_keyboard(artists=artists)
 
-    kb = get_artists_keyboard(artists=artists, page=page, tab=tab)
     try:
         await callback.message.edit_text(
             text,
