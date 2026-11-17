@@ -249,7 +249,7 @@ async def show_all_artists(callback: CallbackQuery) -> None:
     all_artists = await db.get_all_artists()
     await callback.message.edit_text(
         text,
-        reply_markup=get_all_artists_keyboard(all_artists),
+        reply_markup=get_all_artists_keyboard(all_artists, page=1),
         parse_mode="HTML",
     )
     await callback.answer()
@@ -268,9 +268,55 @@ async def show_popular_artists(callback: CallbackQuery) -> None:
     popular_artists = await db.get_popular_artists()
     await callback.message.edit_text(
         text,
-        reply_markup=get_artists_keyboard(popular_artists),
+        reply_markup=get_artists_keyboard(popular_artists, page=1, tab="popular"),
         parse_mode="HTML",
     )
+    await callback.answer()
+
+
+@generation_router.callback_query(F.data.startswith("gen_art_page:"))
+async def process_artists_page_change(callback: CallbackQuery, state: FSMContext) -> None:
+    current_state = await state.get_state()
+    if current_state != GenerationStates.waiting_for_artist.state:
+        await state.set_state(GenerationStates.waiting_for_artist)
+
+    parts = callback.data.split(":")
+    tab = parts[1] if len(parts) > 1 else "popular"
+    try:
+        page = int(parts[2]) if len(parts) > 2 else 1
+    except ValueError:
+        page = 1
+
+    if tab == "all":
+        artists = await db.get_all_artists()
+        text = (
+            "📋 <b>Все доступные артисты в базе:</b>\n\n"
+            "Выбери исполнителя из расширенного списка ниже или отправь его имя сообщением в чат 👇"
+        )
+    else:
+        tab = "popular"
+        artists = await db.get_popular_artists()
+        text = (
+            "🎤 <b>Шаг 1 — артист-референс</b>\n\n"
+            "Выбери артиста, в стиле которого сделать трек. Кнопки — те, что точно есть в базе.\n"
+            "Можно вписать своего сообщением — если голосовой модели нет, бот подскажет.\n\n"
+            "Или «⏭ Без артиста» — тогда стиль зададут только жанры."
+        )
+
+    kb = get_artists_keyboard(artists=artists, page=page, tab=tab)
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+    await callback.answer()
+
+
+@generation_router.callback_query(F.data == "gen_art_noop")
+async def process_artists_noop(callback: CallbackQuery) -> None:
     await callback.answer()
 
 

@@ -130,14 +130,31 @@ def get_help_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def get_artists_keyboard(artists: Optional[Iterable[Dict[str, Any]]] = None) -> InlineKeyboardMarkup:
-    """Builds a 3-column inline keyboard with popular artists + show all + without artist."""
+def get_artists_keyboard(
+    artists: Optional[Iterable[Dict[str, Any]]] = None,
+    page: int = 1,
+    per_page: int = 12,
+    tab: str = "popular",
+) -> InlineKeyboardMarkup:
+    """
+    Builds a paginated 3-column inline keyboard with artists,
+    navigation controls (prev/next/page indicator),
+    tab switcher (popular/all), and 'without artist' button.
+    """
     buttons = []
+    artist_list = list(artists) if artists is not None else (
+        POPULAR_ARTISTS if tab == "popular" else ALL_ARTISTS
+    )
+
+    total_artists = len(artist_list)
+    total_pages = max(1, (total_artists + per_page - 1) // per_page)
+    page = max(1, min(page, total_pages))
+
+    start_idx = (page - 1) * per_page
+    page_artists = artist_list[start_idx : start_idx + per_page]
+
     row = []
-
-    artist_list = list(artists) if artists is not None else POPULAR_ARTISTS
-
-    for artist in artist_list:
+    for artist in page_artists:
         row.append(
             InlineKeyboardButton(
                 text=artist["name"],
@@ -151,57 +168,65 @@ def get_artists_keyboard(artists: Optional[Iterable[Dict[str, Any]]] = None) -> 
     if row:
         buttons.append(row)
 
-    # Show all artists button & Without artist button
-    buttons.append([
-        InlineKeyboardButton(
-            text="📋 Показать всех артистов",
-            callback_data="gen_artists_all",
-        )
-    ])
-    buttons.append([
-        InlineKeyboardButton(
-            text="⏭ Без артиста (только жанры)",
-            callback_data="gen_artist:none",
-        )
-    ])
-
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def get_all_artists_keyboard(artists: Optional[Iterable[Dict[str, Any]]] = None) -> InlineKeyboardMarkup:
-    """Keyboard for extended artists list with back to popular button."""
-    buttons = []
-    row = []
-
-    artist_list = list(artists) if artists is not None else ALL_ARTISTS
-
-    for artist in artist_list:
-        row.append(
+    # Pagination navigation controls
+    if total_pages > 1:
+        nav_row = []
+        if page > 1:
+            nav_row.append(
+                InlineKeyboardButton(
+                    text="⬅️ Назад",
+                    callback_data=f"gen_art_page:{tab}:{page - 1}",
+                )
+            )
+        nav_row.append(
             InlineKeyboardButton(
-                text=artist["name"],
-                callback_data=f"gen_artist:{artist['id']}",
+                text=f"Стр. {page}/{total_pages}",
+                callback_data="gen_art_noop",
             )
         )
-        if len(row) == 3:
-            buttons.append(row)
-            row = []
+        if page < total_pages:
+            nav_row.append(
+                InlineKeyboardButton(
+                    text="Вперёд ➡️",
+                    callback_data=f"gen_art_page:{tab}:{page + 1}",
+                )
+            )
+        buttons.append(nav_row)
 
-    if row:
-        buttons.append(row)
+    # Tab switcher button (Popular <-> All)
+    if tab == "popular":
+        buttons.append([
+            InlineKeyboardButton(
+                text="📋 Показать всех артистов",
+                callback_data="gen_art_page:all:1",
+            )
+        ])
+    else:
+        buttons.append([
+            InlineKeyboardButton(
+                text="⭐ Популярные артисты",
+                callback_data="gen_art_page:popular:1",
+            )
+        ])
 
-    buttons.append([
-        InlineKeyboardButton(
-            text="◀️ Назад к популярным",
-            callback_data="gen_artists_popular",
-        )
-    ])
+    # Without artist button
     buttons.append([
         InlineKeyboardButton(
             text="⏭ Без артиста (только жанры)",
             callback_data="gen_artist:none",
         )
     ])
+
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_all_artists_keyboard(
+    artists: Optional[Iterable[Dict[str, Any]]] = None,
+    page: int = 1,
+    per_page: int = 12,
+) -> InlineKeyboardMarkup:
+    """Keyboard for extended artists list with pagination and back to popular button."""
+    return get_artists_keyboard(artists=artists, page=page, per_page=per_page, tab="all")
 
 
 def get_genres_keyboard(selected_ids: Iterable[str]) -> InlineKeyboardMarkup:
