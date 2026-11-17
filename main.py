@@ -33,10 +33,40 @@ async def set_bot_commands(bot: Bot) -> None:
     commands = [
         BotCommand(command="create", description="🎵 Создать музыку по промту"),
         BotCommand(command="profile", description="👤 Баланс и профиль"),
+        BotCommand(command="topup", description="💳 Пополнить баланс"),
         BotCommand(command="help", description="ℹ️ Инструкция и примеры"),
         BotCommand(command="start", description="🔄 Перезапустить бота"),
     ]
-    await bot.set_my_commands(commands)
+    for attempt in range(5):
+        try:
+            await bot.set_my_commands(commands)
+            logger.info("Telegram bot menu commands registered.")
+            return
+        except Exception as e:
+            logger.warning(
+                "Attempt %d/5: could not set bot commands: %s. Retrying in 10s...",
+                attempt + 1,
+                e,
+            )
+            await asyncio.sleep(10)
+
+
+async def register_telegram_webhook(bot: Bot) -> None:
+    webhook_url = f"{settings.dashboard_base_url.rstrip('/')}{settings.telegram_webhook_path}"
+    logger.info("Registering Telegram webhook: %s", webhook_url)
+    while True:
+        try:
+            await bot.set_webhook(
+                url=webhook_url,
+                secret_token=settings.telegram_webhook_secret or None,
+                allowed_updates=["message", "callback_query", "pre_checkout_query"],
+                drop_pending_updates=False,
+            )
+            logger.info("Telegram webhook successfully registered at %s", webhook_url)
+            break
+        except Exception as e:
+            logger.warning("Failed to register Telegram webhook (%s). Retrying in 10s...", e)
+            await asyncio.sleep(10)
 
 
 def setup_dispatcher() -> Dispatcher:
@@ -75,36 +105,44 @@ async def main() -> None:
     )
     dp = setup_dispatcher()
 
-    # Set Telegram menu commands
-    try:
-        commands = [
-            BotCommand(command="create", description="🎵 Создать музыку по промту"),
-            BotCommand(command="profile", description="👤 Баланс и профиль"),
-            BotCommand(command="topup", description="💳 Пополнить баланс"),
-            BotCommand(command="help", description="ℹ️ Инструкция и примеры"),
-            BotCommand(command="start", description="🔄 Перезапустить бота"),
-        ]
-        await bot.set_my_commands(commands)
-    except Exception as e:
-        logger.warning("Could not set bot commands: %s", e)
-
-    # Start unified Web server (YooKassa Webhook + Admin Web Dashboard) and background poller
+    # Start unified Web server (Telegram Webhook + YooKassa Webhook + Admin Web Dashboard)
     web_runner = None
-    if settings.webhook_enabled or settings.dashboard_enabled:
-        web_runner = await start_web_server(bot)
+    if settings.webhook_enabled or settings.dashboard_enabled or settings.telegram_webhook_enabled:
+        web_runner = await start_web_server(bot, dp=dp)
 
+    # Background workers: commands registration, payments poller
+    commands_task = asyncio.create_task(set_bot_commands(bot))
     poller_task = asyncio.create_task(background_payments_poller(bot))
+    webhook_reg_task = None
 
-    logger.info("Bot is starting polling...")
     try:
-        await bot.delete_webhook(drop_pending_updates=True)
-        await dp.start_polling(
-            bot,
-            polling_timeout=15,
-            allowed_updates=["message", "callback_query", "pre_checkout_query"],
-            backoff_config=BackoffConfig(min_delay=1.0, max_delay=3.5, factor=1.2, jitter=0.1),
-        )
+        if settings.telegram_webhook_enabled:
+            logger.info("Telegram Bot is running in WEBHOOK mode.")
+            webhook_reg_task = asyncio.create_task(register_telegram_webhook(bot))
+            stop_event = asyncio.Event()
+            await stop_event.wait()
+        else:
+            logger.info("Telegram Bot is running in POLLING mode.")
+            while True:
+                try:
+                    await bot.delete_webhook(drop_pending_updates=False)
+                    await dp.start_polling(
+                        bot,
+                        polling_timeout=15,
+                        allowed_updates=["message", "callback_query", "pre_checkout_query"],
+                        backoff_config=BackoffConfig(min_delay=1.0, max_delay=3.5, factor=1.2, jitter=0.1),
+                    )
+                    break
+                except (asyncio.CancelledError, KeyboardInterrupt):
+                    break
+                except Exception as e:
+                    logger.error("Polling error or connection lost: %s. Reconnecting in 10s...", e)
+                    await asyncio.sleep(10)
     finally:
+        if webhook_reg_task:
+            webhook_reg_task.cancel()
+        if commands_task:
+            commands_task.cancel()
         if poller_task:
             poller_task.cancel()
         if web_runner:

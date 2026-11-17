@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     webhook_port: int = 8080
     webhook_path: str = "/webhook/yookassa"
 
+    # Telegram Bot Webhook settings (alternative to long-polling)
+    telegram_webhook_enabled: bool = False
+    telegram_webhook_path: str = "/webhook/telegram"
+    telegram_webhook_secret: str = ""
+
     # Background payments poller (checks pending payments without domain or open ports)
     background_poller_interval_sec: int = 15
 
