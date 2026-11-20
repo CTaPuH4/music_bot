@@ -224,6 +224,11 @@ class Database:
                 pass
 
             try:
+                await db.execute("ALTER TABLE generations ADD COLUMN tags TEXT")
+            except Exception:
+                pass
+
+            try:
                 await db.execute("ALTER TABLE generations ADD COLUMN error_message TEXT")
             except Exception:
                 pass
@@ -711,6 +716,7 @@ class Database:
         genres: Optional[str] = None,
         instrumental: bool = False,
         lyrics: Optional[str] = None,
+        tags: Optional[str] = None,
         status: str = "PENDING",
         error_message: Optional[str] = None,
         raw_response: Optional[str] = None,
@@ -723,13 +729,13 @@ class Database:
                 """
                 INSERT INTO generations (
                     user_id, task_id, prompt, artist, genres,
-                    instrumental, lyrics, status, error_message, raw_response, created_at
+                    instrumental, lyrics, tags, status, error_message, raw_response, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_id, task_id, prompt, artist, genres,
-                    int(instrumental), lyrics, status, error_message, raw_response, created_at
+                    int(instrumental), lyrics, tags, status, error_message, raw_response, created_at
                 ),
             )
             await db.commit()
@@ -1919,7 +1925,7 @@ class Database:
             async with db.execute(
                 """
                 SELECT
-                    g.id, g.task_id, g.user_id, g.prompt, g.artist, g.genres,
+                    g.id, g.task_id, g.user_id, g.prompt, g.artist, g.genres, g.tags,
                     g.instrumental, g.lyrics, g.status, g.audio_url, g.duration, g.created_at,
                     g.error_message, g.raw_response, g.delivery_status, g.image_url,
                     u.username, u.first_name
@@ -2009,7 +2015,7 @@ class Database:
             # 4. Generations
             async with db.execute(
                 """
-                SELECT id, task_id, prompt, artist, genres, instrumental, lyrics,
+                SELECT id, task_id, prompt, artist, genres, tags, instrumental, lyrics,
                        status, audio_url, duration, delivery_status, error_message, created_at
                 FROM generations
                 WHERE user_id = ?

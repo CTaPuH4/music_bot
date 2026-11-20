@@ -285,6 +285,61 @@ async def test_treblo_client():
     print("[OK] Treblo client initialized successfully.")
 
 
+async def test_lyrics_processor():
+    from services.lyrics_processor import normalize_and_structure_lyrics, build_treblo_style_prompt
+
+    # Test 1: Russian tag normalization
+    raw_lyrics = (
+        "1-й куплет:\n"
+        "Я иду по темным улицам\n\n"
+        "Припев:\n"
+        "Мы летим над облаками\n\n"
+        "2 куплет:\n"
+        "Снова утро\n\n"
+        "Аутро:\n"
+        "Тишина"
+    )
+    formatted = normalize_and_structure_lyrics(raw_lyrics)
+    assert "[Verse 1]" in formatted
+    assert "[Chorus]" in formatted
+    assert "[Verse 2]" in formatted
+    assert "[Outro]" in formatted
+    assert "1-й куплет:" not in formatted
+    assert "Припев:" not in formatted
+
+    # Test 2: Raw stanzas without any tags
+    stanzas = (
+        "Строка один\nСтрока два\n\n"
+        "Припевный блок\nЛя ля ля\n\n"
+        "Второй куплет строка"
+    )
+    st_formatted = normalize_and_structure_lyrics(stanzas)
+    assert "[Verse 1]" in st_formatted
+    assert "[Chorus]" in st_formatted
+    assert "[Verse 2]" in st_formatted
+
+    # Test 3: Style prompt isolation
+    style_custom = build_treblo_style_prompt(
+        genre_tags_str="Рэп, Трэп",
+        artist_clause="в стиле MACAN (пацанский хип-хоп), ",
+        prompt="Случайная первая строчка текста про вальс",
+        is_custom_lyrics=True,
+    )
+    assert "Рэп, Трэп" in style_custom
+    assert "MACAN" in style_custom
+    assert "вальс" not in style_custom
+    assert "сохранять стиль и темп" in style_custom
+
+    style_auto = build_treblo_style_prompt(
+        genre_tags_str="Рок",
+        artist_clause="в стиле Кино, ",
+        prompt="песня про звезду по имени Солнце",
+        is_custom_lyrics=False,
+    )
+    assert "звезда" in style_auto or "Солнце" in style_auto
+    print("[OK] Lyrics processor & Style prompt isolation tests passed.")
+
+
 async def test_keyboards_and_catalogs():
     from keyboards.inline import (
         POPULAR_ARTISTS,
@@ -769,6 +824,7 @@ async def test_web_dashboard():
         prompt="cosmic synthwave track",
         artist="Scriptonite",
         genres="Synthwave, Electronic",
+        tags="synthwave, electronic, scriptonite",
         instrumental=False,
     )
     await test_db.update_generation_status("task_web_1", "SUCCESS", audio_url="https://audio.example.com/track1.mp3")
@@ -836,6 +892,7 @@ async def test_web_dashboard():
     succ_gen = next(g for g in generations if g["task_id"] == "task_web_1")
     fail_gen = next(g for g in generations if g["task_id"] == "task_fail_1")
     assert succ_gen["audio_url"] == "https://audio.example.com/track1.mp3"
+    assert succ_gen.get("tags") == "synthwave, electronic, scriptonite"
     assert fail_gen["status"] == "FAILURE"
     assert "NSFW prompt" in fail_gen["error_message"]
     assert "nsfw_content_violation" in fail_gen["raw_response"]
@@ -1095,6 +1152,7 @@ async def run_all():
     await test_db()
     await test_promo_codes()
     await test_treblo_client()
+    await test_lyrics_processor()
     await test_yookassa_client()
     await test_referral_tiers()
     await test_keyboards_and_catalogs()

@@ -41,6 +41,7 @@ from services.treblo import (
 )
 from states.generation import GenerationStates
 from services.tags import resolve_user_tags
+from services.lyrics_processor import normalize_and_structure_lyrics, build_treblo_style_prompt
 
 logger = logging.getLogger(__name__)
 generation_router = Router()
@@ -671,6 +672,9 @@ async def process_lyrics(message: Message, state: FSMContext) -> None:
         )
         return
 
+    # Normalize and structure lyrics for Treblo / Suno
+    formatted_lyrics = normalize_and_structure_lyrics(lyrics_text)
+
     # Short confirmation message of user's choice
     await message.answer("✍️ <b>Текст песни принят!</b>", parse_mode="HTML")
 
@@ -680,11 +684,11 @@ async def process_lyrics(message: Message, state: FSMContext) -> None:
     selected_genres = data.get("selected_genres", [])
     existing_prompt = data.get("prompt")
 
-    # Use existing prompt or first line of lyrics as prompt/title
+    # Use existing prompt or first meaningful line of lyrics as prompt/title for DB/UI
     first_line = ""
-    for line in lyrics_text.splitlines():
+    for line in formatted_lyrics.splitlines():
         clean_line = line.strip()
-        if clean_line:
+        if clean_line and not clean_line.startswith("[") and not clean_line.startswith("("):
             first_line = clean_line[:35]
             break
     prompt = existing_prompt or first_line or "Песня на свой текст"
@@ -701,7 +705,7 @@ async def process_lyrics(message: Message, state: FSMContext) -> None:
         artist_name=artist_name,
         artist_style=artist_style,
         selected_genre_ids=selected_genres,
-        lyrics=lyrics_text,
+        lyrics=formatted_lyrics,
     )
 
 
@@ -926,7 +930,15 @@ async def execute_generation(
             if artist_name and artist_style
             else (f"в стиле {artist_name}, " if artist_name else "")
         )
-        full_prompt = f"Жанры: {genre_tags_str}. {artist_clause}{prompt}".strip()
+        full_prompt = build_treblo_style_prompt(
+            genre_tags_str=genre_tags_str,
+            artist_clause=artist_clause,
+            prompt=prompt,
+            is_custom_lyrics=bool(lyrics and lyrics.strip()),
+        )
+
+        # Prepare tags string for DB / Admin UI
+        tags_str = ", ".join(tags) if tags else ""
 
         # Create task in Treblo
         try:
@@ -939,9 +951,10 @@ async def execute_generation(
             await db.record_generation(
                 user_id=user_id,
                 task_id=task_id,
-                prompt=prompt,
+                prompt=full_prompt,
                 artist=artist_name,
                 genres=genre_names_str,
+                tags=tags_str,
                 instrumental=instrumental,
                 lyrics=lyrics,
                 status="PENDING",
@@ -952,9 +965,10 @@ async def execute_generation(
             await db.record_generation(
                 user_id=user_id,
                 task_id=fail_id,
-                prompt=prompt,
+                prompt=full_prompt,
                 artist=artist_name,
                 genres=genre_names_str,
+                tags=tags_str,
                 instrumental=instrumental,
                 lyrics=lyrics,
                 status="FAILURE",

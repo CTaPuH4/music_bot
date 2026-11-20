@@ -1144,8 +1144,10 @@ def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> 
 
         raw_prompt = g.get("prompt") or ""
         raw_lyrics = g.get("lyrics") or ""
+        raw_tags = g.get("tags") or ""
         prompt_escaped = html.escape(raw_prompt)
         lyrics_escaped = html.escape(raw_lyrics)
+        tags_escaped = html.escape(raw_tags)
 
         prompt_clean = raw_prompt.replace("\r", " ").replace("\n", " ").strip()
         if len(prompt_clean) > 48:
@@ -1158,7 +1160,7 @@ def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> 
         err_msg_escaped = html.escape(err_msg)
         raw_resp_escaped = html.escape(raw_resp)
 
-        is_expandable = len(raw_prompt) > 48 or bool(raw_lyrics.strip())
+        is_expandable = len(raw_prompt) > 48 or bool(raw_lyrics.strip()) or bool(raw_tags.strip())
 
         if is_expandable:
             prompt_cell = f"""
@@ -1174,6 +1176,7 @@ def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> 
                     <i class="bi bi-arrows-angle-expand me-1"></i>Весь текст
                 </button>
                 <div class="d-none full-prompt-data">{prompt_escaped}</div>
+                <div class="d-none full-tags-data">{tags_escaped}</div>
                 <div class="d-none full-lyrics-data">{lyrics_escaped}</div>
             </div>
             """
@@ -1191,6 +1194,7 @@ def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> 
                     <i class="bi bi-eye me-1"></i>Инфо
                 </button>
                 <div class="d-none full-prompt-data">{prompt_escaped}</div>
+                <div class="d-none full-tags-data">{tags_escaped}</div>
                 <div class="d-none full-lyrics-data">{lyrics_escaped}</div>
             </div>
             """
@@ -1356,17 +1360,33 @@ def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> 
 
                     <div class="mb-3">
                         <div class="d-flex justify-content-between align-items-center mb-1">
-                            <label class="form-label text-muted small fw-bold mb-0">ПОЛНЫЙ ТЕКСТ ПРОМТА:</label>
+                            <label class="form-label text-muted small fw-bold mb-0">
+                                <i class="bi bi-chat-left-quote me-1"></i>ПОЛНЫЙ ПРОМПТ (STYLE PROMPT, ОТПРАВЛЕН В TREBLO API):
+                            </label>
                             <button class="btn btn-sm btn-outline-info py-0 px-2" id="copyPromptBtn" style="font-size: 0.75rem;">
                                 <i class="bi bi-clipboard me-1"></i>Копировать промт
                             </button>
                         </div>
-                        <textarea id="modalPromptText" class="form-control text-light font-monospace" rows="5" readonly style="background-color: #0b0f19; border-color: #374151; font-size: 0.85rem; line-height: 1.5;"></textarea>
+                        <textarea id="modalPromptText" class="form-control text-light font-monospace" rows="4" readonly style="background-color: #0b0f19; border-color: #374151; font-size: 0.85rem; line-height: 1.5;"></textarea>
+                    </div>
+
+                    <div class="mb-3" id="modalTagsContainer" style="display: none;">
+                        <div class="d-flex justify-content-between align-items-center mb-1">
+                            <label class="form-label text-muted small fw-bold mb-0">
+                                <i class="bi bi-tags me-1"></i>ТЕГИ API (TAGS, ОТПРАВЛЕНЫ В TREBLO):
+                            </label>
+                            <button class="btn btn-sm btn-outline-info py-0 px-2" id="copyTagsBtn" style="font-size: 0.75rem;">
+                                <i class="bi bi-clipboard me-1"></i>Копировать теги
+                            </button>
+                        </div>
+                        <input type="text" id="modalTagsText" class="form-control text-light font-monospace" readonly style="background-color: #0b0f19; border-color: #374151; font-size: 0.85rem;">
                     </div>
 
                     <div class="mb-2" id="modalLyricsContainer" style="display: none;">
                         <div class="d-flex justify-content-between align-items-center mb-1">
-                            <label class="form-label text-muted small fw-bold mb-0">ТЕКСТ ПЕСНИ (LYRICS):</label>
+                            <label class="form-label text-muted small fw-bold mb-0">
+                                <i class="bi bi-file-earmark-music me-1"></i>ТЕКСТ ПЕСНИ (LYRICS):
+                            </label>
                             <button class="btn btn-sm btn-outline-info py-0 px-2" id="copyLyricsBtn" style="font-size: 0.75rem;">
                                 <i class="bi bi-clipboard me-1"></i>Копировать текст
                             </button>
@@ -1441,6 +1461,7 @@ def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> 
 
                 const tr = btn.closest('tr');
                 const promptText = tr.find('.full-prompt-data').text();
+                const tagsText = tr.find('.full-tags-data').text();
                 const lyricsText = tr.find('.full-lyrics-data').text();
                 const errorText = tr.find('.full-error-data').text();
                 const rawText = tr.find('.full-raw-data').text();
@@ -1455,6 +1476,13 @@ def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> 
                 $('#modalMetaStyle').text(styleStr || '—');
 
                 $('#modalPromptText').val(promptText);
+
+                if (tagsText && tagsText.trim() !== '') {
+                    $('#modalTagsContainer').show();
+                    $('#modalTagsText').val(tagsText);
+                } else {
+                    $('#modalTagsContainer').hide();
+                }
 
                 if (lyricsText && lyricsText.trim() !== '') {
                     $('#modalLyricsContainer').show();
@@ -1521,6 +1549,11 @@ def render_generations_page(generations: List[Dict[str, Any]], user_id: int) -> 
             $(document).on('click', '#copyPromptBtn', function() {
                 const text = $('#modalPromptText').val();
                 copyTextToClipboard(text, $(this), '<i class="bi bi-clipboard me-1"></i>Копировать промт', 'Скопировано!');
+            });
+
+            $(document).on('click', '#copyTagsBtn', function() {
+                const text = $('#modalTagsText').val();
+                copyTextToClipboard(text, $(this), '<i class="bi bi-clipboard me-1"></i>Копировать теги', 'Скопировано!');
             });
 
             $(document).on('click', '#copyLyricsBtn', function() {
